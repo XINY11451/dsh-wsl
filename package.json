@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Model-facing WSL tool: execute Linux commands through wsl.exe from Windows.",
   "type": "module",
   "main": "index.js",
@@ -14,4 +14,4 @@
       "patch": "./cordis.patch.yml"
     }
   }
-}
+}/n
