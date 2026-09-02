@@ -1,5 +1,7 @@
 # dsh-wsl
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A model-facing **WSL** tool plugin for DeepSeek Harness (DSH). It lets an agent run Linux commands through `wsl.exe` directly — no hand-written `.sh` scripts or `pwsh` wrappers.
 
 ## What it does
