@@ -86,3 +86,8 @@ containing the `tool-wsl` row.
 Customization points live at the top of `index.js`: `DEFAULT_DISTRO`,
 `DEFAULT_WORKDIR`, the output caps and the grace period. The distribution is
 currently hardcoded to `Ubuntu-22.04`.
+
+## Listing
+
+The repository carries the `dsh-plugin` topic and is listed under the `wsl`
+category of the awesome-dsh-plugin community list.
