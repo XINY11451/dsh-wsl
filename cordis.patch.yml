@@ -1,0 +1,6 @@
+# This bundle layer registers the wsl tool plugin in an agent preset.
+# Presets can also add the row manually instead of relying on this patch.
+
+- insert:
+    - id: tool-wsl
+      name: 'dsh-wsl'
