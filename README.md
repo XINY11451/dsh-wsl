@@ -45,3 +45,10 @@ and returns `stdout`/`stderr` with exit-code markers.
 - Each call runs in a fresh `bash -lc` shell — no cwd/variables/functions persist between calls.
 - The distro is hardcoded to `Ubuntu-22.04`; edit `DEFAULT_DISTRO` in `index.js` to change it.
 - Uses `wsl.exe -e` (`--exec`) so quoting and `$VAR` expansion behave like a normal shell; the default `--` pass-through mangles single quotes and variables.
+
+## Install from the plugin list
+
+The package declares a `dsh.bundle` manifest (see `package.json`), so once the
+repository is listed it can be installed by name, e.g. `dsh plugin add dsh-wsl`,
+and storefronts will offer it for one-click install. Installing from a local
+path (`file:`) as shown above keeps working either way.
