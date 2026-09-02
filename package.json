@@ -4,5 +4,9 @@
   "description": "Model-facing WSL tool: execute Linux commands through wsl.exe from Windows.",
   "type": "module",
   "main": "index.js",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XINY11451/dsh-wsl.git"
+  }
 }
