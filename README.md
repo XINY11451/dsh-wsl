@@ -52,3 +52,21 @@ The package declares a `dsh.bundle` manifest (see `package.json`), so once the
 repository is listed it can be installed by name, e.g. `dsh plugin add dsh-wsl`,
 and storefronts will offer it for one-click install. Installing from a local
 path (`file:`) as shown above keeps working either way.
+
+## How it works
+
+The plugin is a cordis module that injects the host-plane `tools` and
+`subprocess` registries:
+
+- `apply()` registers a single `wsl` tool with a JSON-schema parameter
+  definition, an output schema, a `render` hook and an async `execute`.
+- `execute()` spawns `wsl.exe -d Ubuntu-22.04 -e bash -lc "<cd workdir && command>"`
+  through the host `subprocess` service, with stdin ignored, stdout/stderr
+  capped at 64 KiB (spilling to disk up to 64 MiB), a 3 s grace period after
+  abort, and an optional `timeoutMs` that aborts the call.
+- Output is returned as `{ exitCode, signal, stdout, stderr, truncated }`;
+  the `render` hook formats it into text with `[exit code: N]` / `[killed by
+  signal: ...]` / `[output truncated]` markers.
+
+The plugin publishes no services of its own, so it sits loose in an agent
+preset without a realm.
