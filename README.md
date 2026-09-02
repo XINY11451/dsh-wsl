@@ -70,3 +70,19 @@ The plugin is a cordis module that injects the host-plane `tools` and
 
 The plugin publishes no services of its own, so it sits loose in an agent
 preset without a realm.
+
+## Development
+
+The plugin is plain ESM with no build step or runtime dependencies outside the
+DSH host plane. Iterate by pointing a profile dependency at the checkout:
+
+```json
+{ "dependencies": { "dsh-wsl": "file:/path/to/dsh-wsl" } }
+```
+
+then restart DSH and exercise the `wsl` tool from a session that uses a preset
+containing the `tool-wsl` row.
+
+Customization points live at the top of `index.js`: `DEFAULT_DISTRO`,
+`DEFAULT_WORKDIR`, the output caps and the grace period. The distribution is
+currently hardcoded to `Ubuntu-22.04`.
