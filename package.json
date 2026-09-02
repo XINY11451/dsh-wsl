@@ -8,5 +8,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/XINY11451/dsh-wsl.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }
