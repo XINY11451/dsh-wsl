@@ -21,6 +21,26 @@ const MAX_OUTPUT_BYTES = 64 * 1024
 const MAX_SPILL_BYTES = 64 * 1024 * 1024
 const GRACE_MS = 3000
 
+// wsl.exe writes UTF-16LE to a redirected stdout/stderr by default. Setting
+// WSL_UTF8=1 makes every wsl.exe-owned stream (launcher warnings, the
+// `wsl -l -v` table) UTF-8; the Linux command's own output is already UTF-8
+// and passes through unchanged.
+const WSL_SPAWN_ENV = { WSL_UTF8: '1' }
+
+// wsl.exe emits this locale-dependent launcher warning to stderr whenever
+// Windows has a localhost proxy configured and WSL runs in NAT mode. It
+// repeats on every call, so drop it; the tokens "localhost" and "proxy"
+// ("代理") stay stable across locales.
+const LOCALHOST_PROXY_WARNING = /^\s*wsl:\s.*(localhost|127\.0\.0\.1).*(proxy|代理)/i
+
+// Strip the wsl.exe launcher's per-call localhost-proxy warning from stderr.
+function cleanStderr(text) {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !LOCALHOST_PROXY_WARNING.test(line))
+    .join('\n')
+}
+
 // --- small helpers ---------------------------------------------------------
 
 // Shell-quote a value for a single-quoted `export KEY='value'` fragment.
@@ -39,12 +59,13 @@ function resolveDistro(arg) {
 }
 
 // Translate literal Windows drive paths (C:\foo or C:/foo) into WSL /mnt/c/foo.
-// Everything else is left untouched, so Linux paths and flags pass through.
+// The `\b` before the drive letter keeps URLs like `https://` intact — the `s`
+// there follows `p`, so it has no word boundary. Backslashes are only rewritten
+// inside the matched path segment (which ends at whitespace or a quote).
 function windowsPathToWsl(text) {
   if (typeof text !== 'string') return text
-  return text
-    .replace(/([a-zA-Z]):([\\/])/g, (_m, d) => `/mnt/${d.toLowerCase()}/`)
-    .replace(/\\/g, '/')
+  return text.replace(/\b([a-zA-Z]):[\\/]([^\s"'`]*)/g, (_m, drive, rest) =>
+    `/mnt/${drive.toLowerCase()}/` + rest.replace(/\\/g, '/'))
 }
 
 // Commands that will never be run silently. Each entry is matched against the
@@ -89,7 +110,7 @@ async function runWsl(ctx, command, opts = {}) {
   const distro = resolveDistro(opts.distro)
   const workdir = opts.workdir !== undefined && opts.workdir !== '' ? windowsPathToWsl(opts.workdir) : DEFAULT_WORKDIR
 
-  let full = `cd ${shellQuote(workdir)} && ${command}`
+  let full = `cd ${workdir === '~' ? '~' : shellQuote(workdir)} && ${command}`
   if (opts.env && typeof opts.env === 'object') {
     const exports = Object.entries(opts.env)
       .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
@@ -102,6 +123,7 @@ async function runWsl(ctx, command, opts = {}) {
   try {
     const handle = ctx.subprocess.spawn({
       argv: ['wsl.exe', '-d', distro, '-e', 'bash', '-lc', full],
+      env: WSL_SPAWN_ENV,
       stdio: {
         stdin: 'ignore',
         stdout: { maxBytes: MAX_OUTPUT_BYTES, spill: { maxBytes: MAX_SPILL_BYTES } },
@@ -117,7 +139,7 @@ async function runWsl(ctx, command, opts = {}) {
       exitCode: outcome.exitCode ?? null,
       signal: outcome.signal ?? null,
       stdout: stdout.text,
-      stderr: stderr.text,
+      stderr: cleanStderr(stderr.text),
       truncated: stdout.lossy || stderr.lossy,
     }
   } finally {
@@ -339,6 +361,7 @@ async function runWslRaw(ctx, argv) {
   try {
     const handle = ctx.subprocess.spawn({
       argv,
+      env: WSL_SPAWN_ENV,
       stdio: {
         stdin: 'ignore',
         stdout: { maxBytes: MAX_OUTPUT_BYTES, spill: { maxBytes: MAX_SPILL_BYTES } },
@@ -354,7 +377,7 @@ async function runWslRaw(ctx, argv) {
       exitCode: outcome.exitCode ?? null,
       signal: outcome.signal ?? null,
       stdout: stdout.text,
-      stderr: stderr.text,
+      stderr: cleanStderr(stderr.text),
       truncated: stdout.lossy || stderr.lossy,
     }
   } finally {
