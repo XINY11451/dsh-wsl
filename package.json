@@ -9,6 +9,15 @@
     "type": "git",
     "url": "git+https://github.com/XINY11451/dsh-wsl.git"
   },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "screenshots.json",
+    "assets",
+    "LICENSE"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
