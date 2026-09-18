@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "Model-facing WSL tool: execute Linux commands through wsl.exe from Windows.",
   "type": "module",
   "main": "index.js",
@@ -16,8 +16,13 @@
     "README.zh-CN.md",
     "screenshots.json",
     "assets",
+    "test",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "test:real": "node test/real-seam.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
