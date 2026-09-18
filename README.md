@@ -19,11 +19,15 @@ The plugin registers three tools:
 Runs:
 
 ```
-wsl.exe -d <distro> -e bash -lc "cd <workdir> && <command>"
+wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 ```
 
 and returns `stdout`/`stderr` with `[exit code: N]` / `[killed by signal: ...]` /
 `[timed out after Nms; the command was killed]` / `[output truncated: ...]` markers.
+
+`<distro>` is the caller's `distro` argument, else `DSH_WSL_DISTRO`, else omitted
+entirely so `wsl.exe` uses the **system default distribution** — that is what makes
+the package portable to a machine that has no `Ubuntu-22.04`.
 
 A script longer than the Windows command-line limit (32767 characters) is fed to
 `wsl.exe -d <distro> -e bash -ls` on **stdin** instead, so long commands work
@@ -69,16 +73,32 @@ unknown distro is an error rather than a partial answer.
 | `description` | yes | string | short UI label |
 | `workdir` | no | string | Linux path (`/home/me`, `~/src`) or Windows path, default `~` |
 | `timeoutMs` | no | number | timeout in milliseconds, default 600000 (10 min); the process is killed and the result marked as timed out |
-| `distro` | no | string | WSL distribution name, default `Ubuntu-22.04` |
+| `distro` | no | string | WSL distribution; defaults to the system default distribution |
 | `env` | no | object | extra environment variables to export (keys must be valid shell names) |
 | `allowDangerous` | no | boolean | set `true` to run destructive commands |
 | `translatePaths` | no | boolean | default `true`; set `false` to pass `command` through verbatim |
 
+## Configuration
+
+| Environment variable | Default | Effect |
+|---|---|---|
+| `DSH_WSL_DISTRO` | (system default) | Pin the distribution for every call. |
+| `DSH_WSL_TIMEOUT_MS` | `600000` | Default deadline for a model-issued command; `timeoutMs` overrides it per call. |
+| `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | Per-stream in-memory window (1 KiB – 8 MiB). Also raises the spill ceiling when set above 64 MiB. |
+
+An unparsable or out-of-range value falls back to the default: one bad variable
+must not take all three tools down. Values are read once per mount, so a change
+takes effect on restart.
+
 ## Notes
 
 - Each call runs in a fresh shell — no cwd/variables/functions persist between calls.
-- The default distro is `Ubuntu-22.04`; override it per call with the `distro` argument or globally with the `DSH_WSL_DISTRO` environment variable. Edit `DEFAULT_DISTRO` in `index.js` to change the fallback.
-- An unknown distro is reported as a clear error (`distribution "X" is not registered`) instead of a raw `-1` exit code.
+- **stdin is `/dev/null`.** An interactive command (`read`, `cat`, a `sudo`
+  password prompt without `-S`) therefore gets EOF immediately and cannot wait
+  for input. Nothing in this plugin can prompt.
+- The distro is the caller's `distro`, else `DSH_WSL_DISTRO`, else the system
+  default; there is no hardcoded fallback name.
+- An unknown distro is reported as a clear error (`distribution "X" is not registered`) instead of a raw `-1` exit code, and any other launcher failure (`Wsl/Service/WSL_E_*`) is surfaced with its code rather than passed off as the command's own exit status.
 - Windows paths in `command` and `workdir` are translated to `/mnt/...` automatically:
   - `C:\Users\me\a.txt` -> `/mnt/c/Users/me/a.txt`, and paths containing spaces work in either slash style and with several paths on one line: `C:\Program Files\Git`, `C:/Program Files/Git`, `C:\Program Files (x86)\Steam` and `cp C:\a.txt D:\b.txt` (both paths are translated) all behave;
   - `\\wsl.localhost\<distro>\home\x` and `\\wsl$\<distro>\home\x` -> `/home/x`;
@@ -108,16 +128,27 @@ path (`file:`) as shown above keeps working either way.
 ## How it works
 
 The plugin is a cordis module that injects the host-plane `tools` and
-`subprocess` registries:
+`subprocess` registries. `index.js` is only the entry point; the implementation
+is split by concern:
 
-- `apply()` registers three tools, each with a JSON-schema parameter definition,
-  an output schema, a `render` hook and an async `execute`.
-- Every call goes through one spawn path (`spawnWsl`): `wsl.exe -d <distro> -e
-  bash -lc "<exports; cd workdir && command>"` through the host `subprocess`
-  service, with stdout/stderr capped at 64 KiB (spilling to disk up to 64 MiB), a
-  3 s grace period after abort, and a deadline that defaults to 10 minutes. The
-  plugin's own probes get a 30 s ceiling so a wedged WSL service cannot hang a
-  tool call forever.
+| Module | Responsibility |
+|---|---|
+| `lib/config.js` | Defaults and environment overrides, resolved once per mount. |
+| `lib/paths.js` | Shell quoting and Windows -> WSL path translation. |
+| `lib/guard.js` | The destructive-command rules. |
+| `lib/result.js` | Launcher-noise filters, truncation facts, marker rendering. |
+| `lib/runner.js` | The single spawn path plus launcher-error classification. |
+| `lib/tools/*.js` | The three tool definitions (schema, execute, presentCall). |
+
+- `apply()` resolves the configuration and registers three tools, each with a
+  JSON-schema parameter definition, an output schema, a `render` hook and an
+  async `execute`.
+- Every call goes through one spawn path (`runner.runWsl`): `wsl.exe -d <distro>
+  -e bash -lc "<exports; cd workdir && command>"` through the host `subprocess`
+  service, with stdout/stderr capped at the configured window (spilling to disk
+  up to 64 MiB), a 3 s grace period after abort, and a deadline that defaults to
+  10 minutes. The plugin's own probes get a 30 s ceiling so a wedged WSL service
+  cannot hang a tool call forever.
 - `env` entries are exported at the front of the command so they reach the
   Linux side reliably; Windows drive paths are rewritten to `/mnt/...` before
   the command is built.
@@ -125,7 +156,7 @@ The plugin is a cordis module that injects the host-plane `tools` and
   stdout, stderr, stdoutTotalBytes, stdoutDroppedBytes, stderrTotalBytes,
   stderrDroppedBytes, stdoutSpillPath, stderrSpillPath }`; the `render` hook
   formats it into text with the markers listed above. The truncation marker
-  quotes the 64 KiB window rather than a count derived from the decoded text,
+  quotes the window size rather than a count derived from the decoded text,
   which can be off by a byte or two when the window starts inside a multi-byte
   character.
 - A destructive-command guard splits the command into `;`/`&`/`|`/newline
@@ -150,28 +181,40 @@ containing the `tool-wsl` row.
 ### Tests
 
 ```sh
-npm test          # 100+ checks against real WSL, with a shim standing in for ctx.subprocess
-npm run test:real # the same seam facts checked against the REAL DSH provider
+npm test          # 180+ checks against real WSL, with a shim standing in for ctx.subprocess
+npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
 `npm test` substitutes only `ctx.subprocess`, with a shim that reproduces the
 seam's bounded tail windows, spill files and termination ladder, and drives the
 three tools against the real WSL installation. It covers path translation,
-workdir quoting, the destructive guard, exit-code/timeout/truncation markers,
-`wsl-path`, `wsl-env` and argument validation.
+workdir quoting, the destructive guard, distro selection, exit-code/timeout/
+truncation markers, `wsl-path`, `wsl-env`, argument validation, configuration
+parsing, launcher-error classification, the returned shape against each declared
+`output.schema`, and a token budget for the model-facing catalog.
 
-`npm run test:real` verifies the seam facts a shim cannot vouch for — that
-`readFrom(0).nextOffset` is the whole-stream total, that the spill file holds the
-complete stream, and that a timeout really kills the Linux side of `wsl.exe`. It
-needs a DSH installation and is skipped unless pointed at one:
+`npm run test:real` runs that same suite against `LocalSubprocessRuntime` — the
+shim must not drift from the real seam — and then `test/real-seam.mjs`, which
+checks the facts a shim cannot vouch for (that `readFrom(0).nextOffset` is the
+whole-stream total, that the spill file holds the complete stream, that a
+timeout really kills the Linux side of `wsl.exe`) and validates every published
+schema with DSH's own `assertSupportedJsonSchema`. It needs a DSH installation:
 
 ```sh
 DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 ```
 
-Customization points live at the top of `index.js`: `DEFAULT_DISTRO`,
-`DEFAULT_WORKDIR`, the output caps, the grace period, the internal timeout
-ceiling and the destructive-pattern list.
+### Syncing a profile
+
+A `file:` dependency is a **copy**, so editing this checkout does not change what
+DSH loads. After any change:
+
+```sh
+npm run sync                  # copies into ~/.dsh/profiles/web/node_modules/dsh-wsl
+npm run sync -- /path/to/profiles/<profile>/node_modules/dsh-wsl
+```
+
+then restart DSH — the plugin is imported once at load.
 
 ## Listing
 

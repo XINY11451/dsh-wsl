@@ -21,7 +21,7 @@ if (modulesRoot === undefined || modulesRoot === '') {
 const load = (relative) => import(pathToFileURL(`${modulesRoot}/${relative}`).href)
 const { Context } = await load('@deepseek-ai/cordis/lib/index.js')
 const { default: LocalSubprocessRuntime } = await load('@deepseek-ai/dsh-subprocess-local/lib/index.js')
-const { assertSupportedJsonSchema, validateJsonSchemaValue } = await load('@deepseek-ai/dsh-tools/lib/index.js')
+const { assertSupportedJsonSchema, validateJsonSchemaValue, ToolRuntime } = await load('@deepseek-ai/dsh-tools/lib/index.js')
 const { apply } = await import(new URL('../index.js', import.meta.url).href)
 
 const runtime = new LocalSubprocessRuntime(new Context())
@@ -32,6 +32,20 @@ let failed = 0
 const check = (label, condition, detail = '') => {
   console.log(`${condition ? '  ok  ' : '  FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
   if (!condition) failed += 1
+}
+
+// Register into the REAL ToolRuntime: this runs the host's own
+// register() path (scoped layer insert + the schema assertion), which no
+// hand-written fake registry can vouch for. The constructor reads
+// ctx.systemPrompt, so stub only that.
+try {
+  const registryCtx = new Context()
+  registryCtx.provide?.('systemPrompt', { tools() {}, section() { return () => {} } })
+  const registry = new ToolRuntime(registryCtx)
+  apply({ tools: registry, subprocess: runtime })
+  check('the plugin registers in the real DSH ToolRuntime', true)
+} catch (error) {
+  check('the plugin registers in the real DSH ToolRuntime', false, error.message)
 }
 
 // ToolRuntime.register() asserts output.schema at PLUGIN LOAD time, so a schema

@@ -1,20 +1,35 @@
 // Regression suite for dsh-wsl.
 //
-//   node test/smoke.mjs
+//   node test/smoke.mjs            # with the shim below standing in for ctx.subprocess
+//   node test/smoke.mjs --real     # the same checks against the REAL DSH provider
 //
 // The plugin is exercised through its real entry points (`apply` -> the three
-// tool objects), against the real WSL installation. Only `ctx.subprocess` is
-// substituted, by a shim that reimplements the DSH seam faithfully enough to
-// matter: bounded in-memory TAIL windows, a full-stream spill file, abort ->
-// SIGTERM -> grace -> SIGKILL, and an `exit`/`close` split so a survivor on the
-// other side of wsl.exe cannot hold `done` open forever.
+// tool objects), against the real WSL installation. The default backend is a
+// shim that reimplements the DSH seam faithfully enough to matter: bounded
+// in-memory TAIL windows, a full-stream spill file, abort -> SIGTERM -> grace ->
+// SIGKILL, and an `exit`/`close` split so a survivor on the other side of
+// wsl.exe cannot hold `done` open forever. `--real` swaps that shim for
+// `LocalSubprocessRuntime`, which is the point: the seam facts must not drift
+// behind a hand-written imitation.
 
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-import { apply, __internals } from '../index.js'
+import { apply } from '../index.js'
+import { resolveConfig } from '../lib/config.js'
+import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
+import { destructiveReason } from '../lib/guard.js'
+import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
+import { assertLauncherReachable, resolveDistro } from '../lib/runner.js'
+import { parseDefaultDistro } from '../lib/tools/wsl-env.js'
+
+// One resolved configuration stands in for the mount the host would create.
+const CONFIG = resolveConfig({})
+const MAX_OUT = CONFIG.maxOutputBytes
+const render = (value) => formatResult(value, MAX_OUT)
 
 // --- tiny test harness -----------------------------------------------------
 
@@ -178,6 +193,22 @@ function statSafe(path) {
   try { return statSync(path).size } catch { return -1 }
 }
 
+/** The real provider, behind the same `{ calls, spawn }` shape as the shim. */
+async function makeRealBackend(modulesRoot) {
+  const load = (relative) => import(pathToFileURL(`${modulesRoot}/${relative}`).href)
+  const { Context } = await load('@deepseek-ai/cordis/lib/index.js')
+  const { default: LocalSubprocessRuntime } = await load('@deepseek-ai/dsh-subprocess-local/lib/index.js')
+  const runtime = new LocalSubprocessRuntime(new Context())
+  const calls = []
+  return {
+    calls,
+    spawn(spec) {
+      calls.push(spec)
+      return runtime.spawn(spec)
+    },
+  }
+}
+
 function makeCtx(shim) {
   const tools = {}
   const ctx = {
@@ -192,7 +223,7 @@ function makeCtx(shim) {
 
 async function unitTests() {
   console.log('\npath translation')
-  const t = __internals.windowsPathToWsl
+  const t = windowsPathToWsl
   eq('simple drive path', t('C:\\Users\\me\\a.txt'), '/mnt/c/Users/me/a.txt')
   eq('backslashes with a space', t('C:\\Program Files\\Git\\cmd'), '/mnt/c/Program Files/Git/cmd')
   eq('trailing segment after a space', t('C:\\Program Files'), '/mnt/c/Program Files')
@@ -217,18 +248,19 @@ async function unitTests() {
   eq('plain linux path untouched', t('/mnt/c/Users'), '/mnt/c/Users')
 
   console.log('\nworkdir quoting')
-  const cd = __internals.buildCdCommand
+  const cd = buildCdCommand
   eq('bare tilde stays expandable', cd('~'), 'cd ~')
   eq('tilde with a space is split', cd('~/my dir'), "cd ~/'my dir'")
   eq('tilde with a plain subdir', cd('~/src'), "cd ~/'src'")
   eq('named tilde', cd('~user/x'), "cd ~user/'x'")
   eq('absolute path is quoted whole', cd('/mnt/c/Program Files'), "cd '/mnt/c/Program Files'")
   eq('single quote is escaped', cd("/tmp/it's here"), "cd '/tmp/it'\\''s here'")
-  eq('tilde-only path stays bare', __internals.quotePath('~'), '~')
-  eq('relative path is quoted', __internals.quotePath('relative dir'), "'relative dir'")
+  eq('tilde-only path stays bare', quotePath('~'), '~')
+  eq('relative path is quoted', quotePath('relative dir'), "'relative dir'")
+  eq('a single quote is escaped', shellQuote("it's"), "'it'\\''s'")
 
   console.log('\ndestructive guard')
-  const bad = __internals.destructiveReason
+  const bad = destructiveReason
   for (const command of [
     'rm -rf /tmp/x',
     'rm -fr /tmp/x',
@@ -298,23 +330,66 @@ async function unitTests() {
   }
 
   console.log('\nstderr cleaning and exit codes')
-  const clean = __internals.cleanStderr
+  const clean = cleanStderr
   const noisy = [
     'wsl: 检测到 localhost 代理配置，但未镜像到 WSL。NAT 模式下的 WSL 不支持 localhost 代理。',
     'your 131072x1 screen size is bogus. expect trouble',
     'real output',
   ].join('\n')
   eq('noise lines are dropped', clean(noisy), 'real output')
-  eq('exit code sentinel normalizes', __internals.normalizeExitCode(0xFFFFFFFF), -1)
-  eq('normal exit code is preserved', __internals.normalizeExitCode(7), 7)
+  eq('exit code sentinel normalizes', normalizeExitCode(0xFFFFFFFF), -1)
+  eq('normal exit code is preserved', normalizeExitCode(7), 7)
 
-  console.log('\nvalidation')
+  console.log('\nvalidation and configuration')
   check('distro rejects shell syntax', (() => {
-    try { __internals.resolveDistro('a; rm -rf /'); return false } catch { return true }
+    try { resolveDistro('a; rm -rf /', CONFIG); return false } catch { return true }
   })())
-  eq('distro default', __internals.resolveDistro(undefined), 'Ubuntu-22.04')
+  eq('no configured distro means the system default', resolveDistro(undefined, CONFIG), null)
+  eq('an argument wins over configuration', resolveDistro('Debian', CONFIG), 'Debian')
 
-  const empty = __internals.streamFacts(undefined)
+  const defaults = resolveConfig({})
+  eq('command timeout default', defaults.commandTimeoutMs, 600_000)
+  eq('output window default', defaults.maxOutputBytes, 65_536)
+  eq('environment overrides the deadline', resolveConfig({ DSH_WSL_TIMEOUT_MS: '5000' }).commandTimeoutMs, 5_000)
+  eq('environment overrides the window', resolveConfig({ DSH_WSL_MAX_OUTPUT_BYTES: '4096' }).maxOutputBytes, 4_096)
+  eq('DSH_WSL_DISTRO pins a distro', resolveConfig({ DSH_WSL_DISTRO: ' Debian ' }).distro, 'Debian')
+  eq('a blank DSH_WSL_DISTRO means the system default', resolveConfig({ DSH_WSL_DISTRO: '   ' }).distro, null)
+  // A typo must not take the tools down, and must not yield an absurd value.
+  eq('unparsable timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: 'soon' }).commandTimeoutMs, 600_000)
+  eq('zero timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: '0' }).commandTimeoutMs, 600_000)
+  eq('oversized window falls back', resolveConfig({ DSH_WSL_MAX_OUTPUT_BYTES: '999999999999' }).maxOutputBytes, 65_536)
+  check('the spill ceiling never trails the window',
+    resolveConfig({ DSH_WSL_MAX_OUTPUT_BYTES: '4194304' }).maxSpillBytes >= 4_194_304)
+
+  console.log('\nlauncher errors')
+  const launcherFailure = (stderr, exitCode = -1) => ({ exitCode, stdout: '', stderr })
+  check('a healthy run raises nothing', (() => {
+    try { assertLauncherReachable('Ubuntu', { exitCode: 0, stdout: '', stderr: '' }); return true } catch { return false }
+  })())
+  check('a missing distro is reported by name', (() => {
+    try {
+      assertLauncherReachable('Debian', launcherFailure('错误代码: Wsl/Service/WSL_E_DISTRO_NOT_FOUND'))
+      return false
+    } catch (error) {
+      return /Debian/.test(error.message) && /not registered/.test(error.message)
+    }
+  })())
+  check('any other launcher failure is surfaced, not swallowed', (() => {
+    try {
+      assertLauncherReachable('Ubuntu', launcherFailure('错误代码: Wsl/Service/WSL_E_WSL2_REQUIRED'))
+      return false
+    } catch (error) {
+      return /WSL_E_WSL2_REQUIRED/.test(error.message)
+    }
+  })())
+  check('an ordinary command failure is left alone', (() => {
+    try { assertLauncherReachable('Ubuntu', launcherFailure('ls: cannot access x', 2)); return true } catch { return false }
+  })())
+  eq('the default distro is read from the -l -v marker',
+    parseDefaultDistro('  NAME   STATE   VERSION\n* Ubuntu-22.04  Running  2\n'), 'Ubuntu-22.04')
+  eq('a list without a marker yields null', parseDefaultDistro('  NAME  STATE  VERSION'), null)
+
+  const empty = streamFacts(undefined)
   eq('missing stream is empty', empty.text, '')
   eq('missing stream is not lossy', empty.lossy, false)
 }
@@ -328,11 +403,11 @@ async function toolTests(tools, shim) {
   eq('stdout captured', ok.stdout.trim(), 'hello')
   eq('not marked timed out', ok.timedOut, false)
   eq('not truncated', ok.truncated, false)
-  check('no markers rendered', __internals.formatResult(ok) === 'hello\n', JSON.stringify(__internals.formatResult(ok)))
+  check('no markers rendered', render(ok) === 'hello\n', JSON.stringify(render(ok)))
 
   const failing = await tools.wsl.execute({ command: 'echo out; echo err 1>&2; exit 7', description: 'fail' })
   eq('exit code 7', failing.exitCode, 7)
-  check('markers rendered', __internals.formatResult(failing) === 'out\n[stderr]\nerr\n[exit code: 7]', JSON.stringify(__internals.formatResult(failing)))
+  check('markers rendered', render(failing) === 'out\n[stderr]\nerr\n[exit code: 7]', JSON.stringify(render(failing)))
 
   console.log('\nwsl: environment and validation')
   const envResult = await tools.wsl.execute({
@@ -378,8 +453,8 @@ async function toolTests(tools, shim) {
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })
   eq('timeout is reported as a fact', timedOut.timedOut, true)
   eq('the effective timeout is reported', timedOut.timeoutMs, 900)
-  check('timeout marker names the effective timeout', /\[timed out after 900ms; the command was killed\]/.test(__internals.formatResult(timedOut)), JSON.stringify(__internals.formatResult(timedOut)))
-  check('timeout does not report a bare exit code', !/\[exit code:/.test(__internals.formatResult(timedOut)))
+  check('timeout marker names the effective timeout', /\[timed out after 900ms; the command was killed\]/.test(render(timedOut)), JSON.stringify(render(timedOut)))
+  check('timeout does not report a bare exit code', !/\[exit code:/.test(render(timedOut)))
   const noTimeoutGiven = await tools.wsl.execute({ command: 'echo default-timeout', description: 'default' })
   eq('a command without timeoutMs still gets the default', noTimeoutGiven.timeoutMs, 600_000)
   eq('the default did not trip', noTimeoutGiven.timedOut, false)
@@ -395,7 +470,7 @@ async function toolTests(tools, shim) {
     const head = readFileSync(big.stdoutSpillPath, 'utf8').slice(0, 6)
     check('spill file starts at the head of the stream', head.startsWith('1\n2\n3'), JSON.stringify(head))
   }
-  const rendered = __internals.formatResult(big)
+  const rendered = render(big)
   check('truncation marker names the spill file', rendered.includes('full stream:') && rendered.includes('bytes'), rendered.split('\n').pop())
   check('truncation marker quotes the window cap, not a derived count',
     /at most the last 65536 of 1288895 bytes were kept/.test(rendered), rendered.split('\n').pop())
@@ -409,7 +484,7 @@ async function toolTests(tools, shim) {
   })
   eq('mid-character stream is truncated', midChar.truncated, true)
   eq('mid-character total is exact', midChar.stdoutTotalBytes, 65_534 + 120_000)
-  const midRendered = __internals.formatResult(midChar)
+  const midRendered = render(midChar)
   check('marker never claims more than the cap',
     /at most the last 65536 of 185534 bytes were kept/.test(midRendered), midRendered.split('\n').pop())
 
@@ -432,6 +507,20 @@ async function toolTests(tools, shim) {
   check('long command sends the script on stdin', typeof shim.calls.at(-1).stdio.stdin === 'object')
   const shortArgv = (await tools.wsl.execute({ command: 'echo short', description: 'short' }), shim.calls.at(-1).argv)
   check('short command keeps bash -lc', shortArgv.includes('-lc'), shortArgv.slice(0, 6).join(' '))
+
+  console.log('\nwsl: distro selection')
+  await tools.wsl.execute({ command: 'true', description: 'default distro' })
+  const defaultArgv = shim.calls.at(-1).argv
+  check('no distro configured drops -d (system default)', !defaultArgv.includes('-d'), defaultArgv.slice(0, 4).join(' '))
+  await tools.wsl.execute({ command: 'true', description: 'pinned', distro: 'Ubuntu-22.04' })
+  const pinnedArgv = shim.calls.at(-1).argv
+  eq('an explicit distro passes -d', pinnedArgv.slice(0, 4).join(' '), 'wsl.exe -d Ubuntu-22.04 -e')
+
+  console.log('\nwsl: presentCall shows the directory actually used')
+  const card = tools.wsl.presentCall({ command: 'pwd', description: 'x', workdir: 'C:\\Program Files' })
+  eq('the card cwd is the translated path', card.cwd, '/mnt/c/Program Files')
+  const plainCard = tools.wsl.presentCall({ command: 'pwd', description: 'x' })
+  check('no workdir means no cwd on the card', !('cwd' in plainCard))
 
   console.log('\nwsl-path')
   const toLinux = await tools['wsl-path'].execute({ path: 'C:\\Program Files\\Git' })
@@ -469,12 +558,33 @@ async function toolTests(tools, shim) {
     check(`${name}: schema root allows no extras`, tools[name].output.schema.additionalProperties === false)
     check(`${name}: every property is required`, tools[name].output.schema.required.slice().sort().join(',') === declared.join(','))
   }
+
+  // The model pays for description + parameters in EVERY request, so the budget
+  // is a real limit. It is asserted, not aspirational: a future edit that
+  // re-bloats the catalog fails here instead of quietly costing tokens forever.
+  // The numbers are a ratchet just above today's size, not a target.
+  console.log('\nmodel-facing catalog budget')
+  let catalog = 0
+  for (const [name, tool] of Object.entries(tools)) {
+    const cost = tool.description.length + JSON.stringify(tool.parameters).length
+    catalog += cost
+    check(`${name}: catalog cost within budget`, cost <= 2_100, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
+  }
+  check('total catalog cost within budget', catalog <= 3_200, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
 }
 
 // --- main ------------------------------------------------------------------
 
+const modulesRoot = process.env.DSH_SUBPROCESS_LOCAL
+const useReal = process.argv.includes('--real')
+if (useReal && (modulesRoot === undefined || modulesRoot === '')) {
+  console.log('skipped: --real needs DSH_SUBPROCESS_LOCAL pointing at a node_modules directory with @deepseek-ai/*')
+  process.exit(0)
+}
+
 const spillDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-test-'))
-const shim = makeShim(spillDir)
+const shim = useReal ? await makeRealBackend(modulesRoot) : makeShim(spillDir)
+console.log(`backend: ${useReal ? `real DSH provider (${modulesRoot})` : 'local shim'}`)
 try {
   const tools = makeCtx(shim)
   check('three tools are registered', Object.keys(tools).sort().join(',') === 'wsl,wsl-env,wsl-path', Object.keys(tools).join(','))
