@@ -235,6 +235,10 @@ async function unitTests() {
     'bash -c "rm -rf /"',
     'xargs rm -rf',
     'find . -exec rm -rf {} +',
+    'rm$IFS-rf /tmp/x',
+    'rm${IFS}-rf /tmp/x',
+    '\\rm -rf /tmp/x',
+    '$(which rm) -rf /tmp/x',
     'dd if=/dev/zero of=/dev/sda',
     'mkfs.ext4 /dev/sdb1',
     'wipefs -a /dev/sdb',
@@ -255,6 +259,11 @@ async function unitTests() {
     'mkfsdir=/tmp/x',
     'echo rebooted',
     'grep -r foo .',
+    'rmdir -rf somedir',
+    'alarm -rf x',
+    'echo rm',
+    "grep 'a\\rm' file",
+    'echo "remove the file"',
   ]) {
     check(`allows ${JSON.stringify(command)}`, bad(command) === null, `reason: ${bad(command)}`)
   }
@@ -390,6 +399,23 @@ async function toolTests(tools, shim) {
   check('reports distributions', env.summary.includes('--- distributions ---'), env.summary)
   await rejects('unknown distro is reported, not swallowed', () => tools['wsl-env'].execute({ distro: 'NoSuchDistro' }), /not registered/)
   await rejects('unknown distro on wsl is reported', () => tools.wsl.execute({ command: 'true', description: 'x', distro: 'NoSuchDistro' }), /not registered/)
+
+  // The host validates a result against `output.schema`, which declares
+  // additionalProperties: false — so any drift between the returned keys and
+  // the declared ones would make every call fail in the live harness.
+  console.log('\nresult shape matches the declared output schema')
+  const shape = [
+    ['wsl', await tools.wsl.execute({ command: 'echo shape', description: 'shape' })],
+    ['wsl-path', await tools['wsl-path'].execute({ path: '/tmp' })],
+    ['wsl-env', await tools['wsl-env'].execute({})],
+  ]
+  for (const [name, value] of shape) {
+    const declared = Object.keys(tools[name].output.schema.properties).sort()
+    const returned = Object.keys(value).sort()
+    check(`${name}: returned keys match the schema`, returned.join(',') === declared.join(','), `${returned.join(',')} vs ${declared.join(',')}`)
+    check(`${name}: schema root allows no extras`, tools[name].output.schema.additionalProperties === false)
+    check(`${name}: every property is required`, tools[name].output.schema.required.slice().sort().join(',') === declared.join(','))
+  }
 }
 
 // --- main ------------------------------------------------------------------

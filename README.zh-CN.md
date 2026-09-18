@@ -98,6 +98,7 @@ wsl.exe -d <distro> -e bash -lc "cd <workdir> && <command>"
 - 危险命令默认被拒绝，除非调用时传 `allowDangerous: true`。防护针对**最终**命令串，
   嵌套写法同样命中，并覆盖分开写与长选项写法：`rm -rf`、`rm -r -f`、`rm -R --force`、
   `rm --recursive --force`、`sudo rm -r -f`、`bash -c "rm -rf /"`、`find . -exec rm -rf {} +`；
+  混淆写法会在匹配前归一化（`rm$IFS-rf`、`rm${IFS}-rf`、`\rm -rf`、`$(which rm) -rf`）。
   同时拒绝往块设备 `dd`、`mkfs`/分区/擦除类工具、电源控制、重定向到块设备与 fork 炸弹。
 - stderr 中重复出现的启动器噪声会被过滤：localhost 代理警告与 procps 的
   `screen size is bogus` 行。

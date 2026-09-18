@@ -154,10 +154,16 @@ function buildCdCommand(workdir) {
 // `rm` is the one command whose flag spelling is genuinely open-ended:
 // `rm -rf`, `rm -fr`, `rm -r -f`, `rm -R --force`, `rm --recursive --force`.
 // A regex over the whole command missed the separated and long forms, so scan
-// each `rm` invocation and collect its flags individually. The token match
-// tolerates the quotes, backticks and `$(` that wrap a nested `bash -c "rm ..."`.
-const RM_INVOCATION = /(?:^|[\s;&|"'`(])(?:\S*\/)?rm(?=[\s"'`]|$)/g
+// each `rm` invocation and collect its flags individually. The prefix and the
+// trailing lookahead tolerate everything that can wrap a command word: quotes,
+// backticks, `$(`/`)` command substitution, and a `\rm` escape.
+const RM_INVOCATION = /(?:^|[\s;&|"'`(\\])(?:\S*\/)?rm(?=[\s"'`)}]|$)/g
 const TILDE_STRIP_RE = /^["'`]+|["'`]+$/g
+
+// `$IFS` (and `${IFS}`) expands to whitespace, so `rm$IFS-rf` is the same
+// command as `rm -rf`. Normalize it for MATCHING only; the command that runs is
+// untouched, so the worst case is refusing an exotic but harmless literal.
+const IFS_ESCAPE_RE = /\$\{?IFS\}?/g
 
 function rmIsDestructive(segment) {
   RM_INVOCATION.lastIndex = 0
@@ -195,9 +201,10 @@ const DESTRUCTIVE_PATTERNS = [
 
 // Returns a human-readable reason when `command` is destructive, else null.
 function destructiveReason(command) {
-  if (rmIsDestructive(command)) return 'recursive forced delete (`rm -r -f`)'
+  const scanned = command.replace(IFS_ESCAPE_RE, ' ')
+  if (rmIsDestructive(scanned)) return 'recursive forced delete (`rm -r -f`)'
   for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
-    if (pattern.test(command)) return reason
+    if (pattern.test(scanned)) return reason
   }
   return null
 }

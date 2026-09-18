@@ -91,7 +91,7 @@ unknown distro is an error rather than a partial answer.
   [stdout truncated: kept the last 65536 of 1288895 bytes; full stream: C:\...\stdout.log]
   ```
 - `timeoutMs` also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
-- Destructive commands are refused unless the call passes `allowDangerous: true`. The guard checks the *final* command string, so nested forms count, and it covers the separated/long spellings too: `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive --force`, `sudo rm -r -f`, `bash -c "rm -rf /"`, `find . -exec rm -rf {} +`. It also refuses `dd` onto a block device, `mkfs`/partitioning/wiping tools, power control, redirection onto a block device, and fork bombs.
+- Destructive commands are refused unless the call passes `allowDangerous: true`. The guard checks the *final* command string, so nested forms count, and it covers the separated/long spellings too: `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive --force`, `sudo rm -r -f`, `bash -c "rm -rf /"`, `find . -exec rm -rf {} +`. Obfuscated spellings are normalized before matching (`rm$IFS-rf`, `rm${IFS}-rf`, `\rm -rf`, `$(which rm) -rf`). It also refuses `dd` onto a block device, `mkfs`/partitioning/wiping tools, power control, redirection onto a block device, and fork bombs.
 - Repeated launcher noise is stripped from stderr: the localhost-proxy warning and procps' `screen size is bogus` line.
 - Uses `wsl.exe -e` (`--exec`) so quoting and `$VAR` expansion behave like a normal shell; the default `--` pass-through mangles single quotes and variables.
 
