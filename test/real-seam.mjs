@@ -21,6 +21,7 @@ if (modulesRoot === undefined || modulesRoot === '') {
 const load = (relative) => import(pathToFileURL(`${modulesRoot}/${relative}`).href)
 const { Context } = await load('@deepseek-ai/cordis/lib/index.js')
 const { default: LocalSubprocessRuntime } = await load('@deepseek-ai/dsh-subprocess-local/lib/index.js')
+const { assertSupportedJsonSchema, validateJsonSchemaValue } = await load('@deepseek-ai/dsh-tools/lib/index.js')
 const { apply } = await import(new URL('../index.js', import.meta.url).href)
 
 const runtime = new LocalSubprocessRuntime(new Context())
@@ -32,6 +33,24 @@ const check = (label, condition, detail = '') => {
   console.log(`${condition ? '  ok  ' : '  FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
   if (!condition) failed += 1
 }
+
+// ToolRuntime.register() asserts output.schema at PLUGIN LOAD time, so a schema
+// outside DSH's supported subset would break registration on the next restart
+// rather than fail a call. The parameters schema is projected into the model's
+// tool catalog, so it has to stay inside the same subset.
+for (const [name, tool] of Object.entries(tools)) {
+  try {
+    assertSupportedJsonSchema(tool.output.schema)
+    assertSupportedJsonSchema(tool.parameters)
+    check(`${name}: schemas accepted by DSH's own validator`, true)
+  } catch (error) {
+    check(`${name}: schemas accepted by DSH's own validator`, false, error.message)
+  }
+}
+
+const shape = { ...(await tools.wsl.execute({ command: 'echo shape', description: 'shape' })) }
+check('a returned value satisfies output.schema', validateJsonSchemaValue(tools.wsl.output.schema, shape, '').length === 0)
+check('an unexpected result field is rejected', validateJsonSchemaValue(tools.wsl.output.schema, { ...shape, extra: 1 }, '').length > 0)
 
 const small = await tools.wsl.execute({ command: 'echo hello', description: 'echo' })
 check('small output is complete', small.stdout.trim() === 'hello' && small.truncated === false)

@@ -22,9 +22,11 @@ const GRACE_MS = 3000
 
 // The plugin's OWN probes (`wsl -l -v`, `wslpath`, the `wsl-env` sweep) are
 // never the user's command, so they get a hard ceiling: a wedged WSL service
-// must not hang a tool call forever. User commands get no default timeout —
-// only an explicit `timeoutMs`.
+// must not hang a tool call forever. User commands get a generous default
+// instead of none — a hung `wsl.exe` would otherwise block the tool call for
+// good — and `timeoutMs` overrides it per call.
 const INTERNAL_TIMEOUT_MS = 30_000
+const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 
 // Windows `CreateProcess` caps the whole command line at 32767 characters, so a
 // larger script makes wsl.exe itself fail to launch with an opaque
@@ -82,23 +84,27 @@ function resolveDistro(arg) {
 }
 
 // Characters that may appear inside a Windows path segment but cannot be part
-// of it: whitespace ends the segment, and shell metacharacters end the token.
-const PATH_CHAR = `[^\\s"'` + '`' + `|&;<>()]`
+// of one: whitespace ends the segment, and a shell operator ends the token.
+// Parentheses are deliberately ALLOWED — `C:\Program Files (x86)\Steam` is an
+// ordinary Windows path, and a trailing `$(...)` is harmless because a
+// continuation chunk only ever changes if it contains a backslash.
+const PATH_CHAR = `[^\\s"'` + '`' + `|&;<>]`
 
 // One Windows drive-absolute path: `C:\foo`, `C:/foo`, and — the case the
 // first version got wrong — a path whose LATER segments contain spaces, e.g.
-// `C:\Program Files\Git`.
+// `C:\Program Files\Git` or `C:\Program Files (x86)\Steam`.
 //
-// A space only continues the match when the following chunk itself contains a
-// backslash. That rule is both necessary and safe:
-//   * necessary — every segment boundary inside a real Windows path is written
-//     with a backslash, so a chunk after a space contains one unless the space
-//     is the start of a separate shell word;
-//   * safe — an unconsumed chunk is left verbatim, so `C:\Program Files` still
-//     becomes `/mnt/c/Program Files` (only the part that had backslashes is
-//     rewritten), while `echo C:\x && ls` stops at the `&&`.
+// A space continues the match only when the next chunk does NOT itself start a
+// new drive path, so `cp C:\a.txt D:\b.txt` translates BOTH paths instead of
+// letting ` D:\b.txt` be absorbed into the first. An unconsumed chunk is left
+// verbatim, so `C:\Program Files` (no backslash after the space) still becomes
+// `/mnt/c/Program Files`, and `echo C:\x && ls` still stops at the `&&`.
+//
+// The lookbehind replaces the first version's `\b`: a drive letter preceded by
+// `/`, `\` or `:` is not a drive path but path-like TEXT inside another
+// expression — `sed "s/C:\x/y/"` and `http://x/C:/y` must be left alone.
 const DRIVE_PATH_RE = new RegExp(
-  `\\b([A-Za-z]):([\\\\/])(${PATH_CHAR}*(?:\\s+${PATH_CHAR}*\\\\${PATH_CHAR}*)*)`,
+  `(?<![\\w/\\\\:])([A-Za-z]):([\\\\/])(${PATH_CHAR}*(?:[ \\t]+(?![A-Za-z]:[\\\\/])${PATH_CHAR}*)*)`,
   'g',
 )
 
@@ -165,46 +171,84 @@ const TILDE_STRIP_RE = /^["'`]+|["'`]+$/g
 // untouched, so the worst case is refusing an exotic but harmless literal.
 const IFS_ESCAPE_RE = /\$\{?IFS\}?/g
 
+// A RECURSIVE delete is refused whether or not `-f` is present: with stdin on
+// /dev/null nothing prompts, so `rm -r tree` deletes a whole tree silently —
+// exactly what this guard exists to prevent. Requiring `-f` as well let
+// `rm a -f; rm b -r` through, and `-f` only suppresses prompts anyway.
 function rmIsDestructive(segment) {
   RM_INVOCATION.lastIndex = 0
   let match
   while ((match = RM_INVOCATION.exec(segment)) !== null) {
-    let recursive = false
-    let force = false
     for (const rawToken of segment.slice(match.index + match[0].length).split(/\s+/)) {
       const token = rawToken.replace(TILDE_STRIP_RE, '')
       if (token === '--') break
-      if (token === '--recursive') recursive = true
-      else if (token === '--force') force = true
-      else if (/^-[A-Za-z]+$/.test(token)) {
-        if (token.includes('r') || token.includes('R')) recursive = true
-        if (token.includes('f')) force = true
-      }
+      if (token === '--recursive') return true
+      else if (/^-[A-Za-z]+$/.test(token) && (token.includes('r') || token.includes('R'))) return true
     }
-    if (recursive && force) return true
   }
   return false
 }
 
-// Commands that will never be run silently. Each entry is matched against the
-// final (post-translation) command string. When one matches, the call is
-// refused unless the caller passed `allowDangerous: true`.
+// A command line is a sequence of segments separated by `;`, `&`, `|` or a
+// newline. Scanning the WHOLE line for dangerous keywords refused `man fdisk`
+// and `grep reboot /var/log/syslog`, so each segment is evaluated separately
+// and the device/power tools are matched at COMMAND POSITION — the first word,
+// past the wrappers and `VAR=value` assignments that can precede it.
+const SEGMENT_SPLIT_RE = /[;&|\n]+/
+const COMMAND_WRAPPERS = new Set([
+  'sudo', 'doas', 'command', 'exec', 'nohup', 'nice', 'ionice', 'time', 'stdbuf', 'setsid', 'env',
+])
+const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+function commandWord(segment) {
+  const tokens = segment.trim().split(/\s+/).filter((token) => token.length > 0)
+  let index = 0
+  while (index < tokens.length) {
+    const bare = tokens[index].replace(TILDE_STRIP_RE, '')
+    if (COMMAND_WRAPPERS.has(bare) || ENV_ASSIGNMENT_RE.test(bare) || bare.startsWith('-')) {
+      index += 1
+      continue
+    }
+    break
+  }
+  const word = tokens[index]
+  if (word === undefined) return null
+  const bare = word.replace(TILDE_STRIP_RE, '')
+  return bare.slice(bare.lastIndexOf('/') + 1)
+}
+
+const POWER_TOOLS = new Set(['shutdown', 'poweroff', 'reboot', 'halt'])
+const DISK_TOOLS = new Set(['mkswap', 'wipefs', 'fdisk', 'sfdisk', 'gdisk', 'sgdisk', 'parted', 'blkdiscard', 'shred'])
+
+// Patterns that are dangerous wherever they appear, because they WRITE to a
+// block device or fork-bomb the machine regardless of the command word.
 const DESTRUCTIVE_PATTERNS = [
-  [/\bdd\b[^\n]*\bof=\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd|disk)/, 'dd onto a block device'],
-  [/\bmkfs(\.\w+)?\b/, 'mkfs (format a filesystem)'],
-  [/\b(mke2fs|mkswap|wipefs|fdisk|sfdisk|gdisk|sgdisk|parted|blkdiscard)\b/, 'disk partitioning / wiping tool'],
-  [/\b(shutdown|poweroff|reboot|halt)\b/, 'power control'],
-  [/\bsystemctl\s+(poweroff|reboot|halt)\b/, 'power control'],
   [/[^>]\s*>>?\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd|disk)/, 'redirect onto a block device'],
   [/:\s*\(\s*\)\s*\{[^\n]*\|[^\n]*&[^\n]*\}\s*;\s*:/, 'fork bomb'],
 ]
 
+function segmentReason(segment) {
+  if (rmIsDestructive(segment)) return 'recursive delete (`rm -r`)'
+
+  const word = commandWord(segment)
+  if (word === null) return null
+  if (POWER_TOOLS.has(word)) return `power control (\`${word}\`)`
+  if (/^mkfs(\.\w+)?$/.test(word)) return 'mkfs (format a filesystem)'
+  if (DISK_TOOLS.has(word)) return `disk tool (\`${word}\`)`
+  if (word === 'dd' && /\bof=\s*\/dev\//.test(segment)) return 'dd onto a block device'
+  if (word === 'systemctl' && /\b(poweroff|reboot|halt)\b/.test(segment)) return 'power control (systemctl)'
+  return null
+}
+
 // Returns a human-readable reason when `command` is destructive, else null.
 function destructiveReason(command) {
   const scanned = command.replace(IFS_ESCAPE_RE, ' ')
-  if (rmIsDestructive(scanned)) return 'recursive forced delete (`rm -r -f`)'
   for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
     if (pattern.test(scanned)) return reason
+  }
+  for (const segment of scanned.split(SEGMENT_SPLIT_RE)) {
+    const reason = segmentReason(segment)
+    if (reason !== null) return reason
   }
   return null
 }
@@ -249,12 +293,15 @@ function truncationMarkers(value) {
     const recovery = spill === null || spill === undefined
       ? 'earlier bytes were dropped'
       : `full stream: ${spill}`
-    markers.push(`[${stream} truncated: kept the last ${total - dropped} of ${total} bytes; ${recovery}]`)
+    // Quote the CAP, not `total - dropped`: the window is trimmed on a byte
+    // budget, so it can begin inside a multi-byte character and the decoded
+    // text then counts a replacement character instead of the real bytes.
+    markers.push(`[${stream} truncated: at most the last ${MAX_OUTPUT_BYTES} of ${total} bytes were kept; ${recovery}]`)
   }
   return markers.length > 0 ? markers : ['[output truncated]']
 }
 
-function formatResult(value, args = {}) {
+function formatResult(value) {
   let body = value.stdout || ''
   if (value.stderr && value.stderr.length > 0) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
@@ -265,8 +312,7 @@ function formatResult(value, args = {}) {
   const markers = []
   if (value.truncated) markers.push(...truncationMarkers(value))
   if (value.timedOut) {
-    const requested = args?.timeoutMs
-    const after = typeof requested === 'number' ? `${requested}ms` : 'the requested timeout'
+    const after = typeof value.timeoutMs === 'number' ? `${value.timeoutMs}ms` : 'the configured timeout'
     markers.push(`[timed out after ${after}; the command was killed]`)
   } else if (value.signal !== null && value.signal !== undefined) {
     markers.push(`[killed by signal: ${value.signal}]`)
@@ -287,13 +333,9 @@ async function spawnWsl(ctx, argv, timeoutMs, stdinData) {
   const controller = new AbortController()
   let timedOut = false
   let timer = null
-  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
-    const delay = Math.min(timeoutMs, MAX_TIMER_DELAY_MS)
-    timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, delay)
-  }
+  const effectiveTimeoutMs = typeof timeoutMs === 'number' && timeoutMs > 0
+    ? Math.min(timeoutMs, MAX_TIMER_DELAY_MS)
+    : null
 
   try {
     let handle
@@ -318,6 +360,16 @@ async function spawnWsl(ctx, argv, timeoutMs, stdinData) {
       throw new Error(`wsl: could not launch ${argv[0]}: ${error?.message ?? String(error)}`)
     }
 
+    // Armed AFTER the child exists: the deadline measures the child's lifetime,
+    // and an already-aborted signal can never reach the provider (which throws
+    // "aborted before spawn" instead of starting anything).
+    if (effectiveTimeoutMs !== null) {
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, effectiveTimeoutMs)
+    }
+
     let outcome
     try {
       outcome = await handle.done
@@ -332,6 +384,7 @@ async function spawnWsl(ctx, argv, timeoutMs, stdinData) {
       exitCode: normalizeExitCode(outcome.exitCode ?? null),
       signal: outcome.signal ?? null,
       timedOut,
+      timeoutMs: effectiveTimeoutMs,
       stdout: stdout.text,
       stderr: cleanStderr(stderr.text),
       truncated: stdout.lossy || stderr.lossy,
@@ -401,9 +454,9 @@ function wslTool(ctx) {
       `The distro defaults to \`${DEFAULT_DISTRO}\` (override with the \`distro\` arg or the \`DSH_WSL_DISTRO\` env var). ` +
       `Non-zero exits are reported as \`[exit code: N]\`; a timeout as \`[timed out ...]\`. ` +
       `Output is capped at ${MAX_OUTPUT_BYTES / 1024} KiB per stream: the tail is kept and the marker names the file holding the complete stream, which you can read. ` +
-      `Set \`timeoutMs\` to bound long-running commands. Pass \`env\` to set variables. ` +
-      `Set \`translatePaths: false\` when the command hands a Windows path to a Windows program through interop (WSL does not translate \`/mnt/c/...\` back, so \`notepad.exe C:\\file.txt\` needs the original spelling). ` +
-      `Destructive commands are refused unless \`allowDangerous\` is true.`,
+      `\`timeoutMs\` bounds the call and defaults to ${DEFAULT_COMMAND_TIMEOUT_MS / 60000} minutes. Pass \`env\` to set variables. ` +
+      `Set \`translatePaths: false\` when the command hands a Windows path to a Windows program through interop (WSL does not translate \`/mnt/c/...\` back, so \`notepad.exe C:\\file.txt\` needs the original spelling); this affects \`command\` only, \`workdir\` is always translated. ` +
+      `Destructive commands are refused unless \`allowDangerous\` is true: any recursive delete, \`dd\` onto a device, \`mkfs\`/partitioning, power control and fork bombs.`,
     parameters: {
       type: 'object',
       properties: {
@@ -421,7 +474,7 @@ function wslTool(ctx) {
         },
         timeoutMs: {
           type: 'number',
-          description: 'Timeout in milliseconds. The process is killed on expiry and the result is marked as timed out.',
+          description: `Timeout in milliseconds. The process is killed on expiry and the result is marked as timed out. Defaults to ${DEFAULT_COMMAND_TIMEOUT_MS}.`,
         },
         distro: {
           type: 'string',
@@ -429,16 +482,20 @@ function wslTool(ctx) {
         },
         env: {
           type: 'object',
-          additionalProperties: { type: 'string' },
-          description: 'Extra environment variables to export before running the command. Keys must be valid shell names.',
+          // DSH's supported schema subset requires a BOOLEAN here (an object
+          // value schema is rejected by assertSupportedJsonSchema), so the
+          // value type lives in the description and is enforced at runtime by
+          // execute(), which rejects a non-string value or a bad key name.
+          additionalProperties: true,
+          description: 'Extra environment variables to export before running the command. Keys must be valid shell variable names and values must be strings.',
         },
         allowDangerous: {
           type: 'boolean',
-          description: 'Must be true to run commands matched as destructive (recursive forced delete, dd onto a block device, mkfs, partitioning, shutdown, fork bomb, ...).',
+          description: 'Must be true to run commands matched as destructive: a recursive delete, dd onto a block device, mkfs/partitioning/wiping, power control, or a fork bomb.',
         },
         translatePaths: {
           type: 'boolean',
-          description: 'Default true: rewrite Windows paths in `command` to their /mnt/... form. Set false to pass the command through verbatim, e.g. when a Windows program launched via interop must receive a native path.',
+          description: 'Default true: rewrite Windows paths in `command` to their /mnt/... form. Set false to pass the command through verbatim, e.g. when a Windows program launched via interop must receive a native path. `workdir` is always translated.',
         },
       },
       required: ['command', 'description'],
@@ -451,6 +508,7 @@ function wslTool(ctx) {
           exitCode: { oneOf: [{ type: 'integer' }, { type: 'null' }] },
           signal: { oneOf: [{ type: 'string' }, { type: 'null' }] },
           timedOut: { type: 'boolean' },
+          timeoutMs: { oneOf: [{ type: 'integer' }, { type: 'null' }] },
           truncated: { type: 'boolean' },
           stdout: { type: 'string' },
           stderr: { type: 'string' },
@@ -462,12 +520,12 @@ function wslTool(ctx) {
           stderrSpillPath: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         },
         required: [
-          'exitCode', 'signal', 'timedOut', 'truncated', 'stdout', 'stderr',
+          'exitCode', 'signal', 'timedOut', 'timeoutMs', 'truncated', 'stdout', 'stderr',
           'stdoutTotalBytes', 'stdoutDroppedBytes', 'stderrTotalBytes', 'stderrDroppedBytes',
           'stdoutSpillPath', 'stderrSpillPath',
         ],
       },
-      render: (args, value) => [{ type: 'text', text: formatResult(value, args) }],
+      render: (_args, value) => [{ type: 'text', text: formatResult(value) }],
     },
     async execute(args) {
       if (typeof args.command !== 'string' || args.command.trim().length === 0) {
@@ -511,7 +569,7 @@ function wslTool(ctx) {
         distro: args.distro,
         workdir: args.workdir,
         env: args.env,
-        timeoutMs: args.timeoutMs,
+        timeoutMs: args.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
       })
     },
     presentCall: (args) => ({
@@ -644,11 +702,15 @@ function wslEnvTool(ctx) {
       const lines = [`distro: ${distro}`, uname.stdout.trim()]
       lines.push(mem.exitCode === 0 ? mem.stdout.trimEnd() : failure('memory', mem))
       lines.push(disk.exitCode === 0 ? disk.stdout.trimEnd() : failure('disk', disk))
-      lines.push(
-        list.exitCode === 0
-          ? '--- distributions ---\n' + list.stdout.trimEnd()
-          : failure('distribution list', list),
-      )
+      // `wsl -l -v` can exit 0 with nothing on stdout; a bare header would be
+      // the only thing this section contributes, so report it as a failure.
+      if (list.exitCode === 0 && list.stdout.trim() !== '') {
+        lines.push('--- distributions ---\n' + list.stdout.trimEnd())
+      } else if (list.exitCode === 0) {
+        lines.push('[distribution list unavailable: wsl -l -v produced no output]')
+      } else {
+        lines.push(failure('distribution list', list))
+      }
 
       return { summary: lines.filter((line) => line.length > 0).join('\n\n') }
     },

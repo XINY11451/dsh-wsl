@@ -202,7 +202,13 @@ async function unitTests() {
   eq('duplicated separator collapses', t('C:\\\\foo'), '/mnt/c/foo')
   eq('two paths in one command', t('ls C:\\a && ls D:\\b'), 'ls /mnt/c/a && ls /mnt/d/b')
   eq('stops before a shell operator', t('ls C:\\a && echo hi'), 'ls /mnt/c/a && echo hi')
+  eq('two drive paths, space separated', t('cp C:\\a.txt D:\\b.txt'), 'cp /mnt/c/a.txt /mnt/d/b.txt')
+  eq('three drive paths', t('diff C:\\a\\b.txt D:\\c\\d.txt E:\\e.txt'), 'diff /mnt/c/a/b.txt /mnt/d/c/d.txt /mnt/e/e.txt')
+  eq('parenthesised path segment', t('ls "C:\\Program Files (x86)\\Steam"'), 'ls "/mnt/c/Program Files (x86)/Steam"')
+  eq('trailing spaced segment without a backslash', t('cd C:\\Users\\me\\My Docs'), 'cd /mnt/c/Users/me/My Docs')
   eq('URL is untouched', t('curl https://example.com/x'), 'curl https://example.com/x')
+  eq('drive-like text inside a substitution is untouched', t('sed "s/C:\\x/y/"'), 'sed "s/C:\\x/y/"')
+  eq('drive-like segment inside a URL is untouched', t('echo "see http://x/C:/y"'), 'echo "see http://x/C:/y"')
   eq('lowercase letter-slash is untouched', t("echo 'a:/b'"), "echo 'a:/b'")
   eq('quoted windows path', t('cat "C:\\Program Files\\a b.txt"'), 'cat "/mnt/c/Program Files/a b.txt"')
   eq('UNC wsl.localhost', t('ls \\\\wsl.localhost\\Ubuntu-22.04\\home\\xiny'), 'ls /home/xiny')
@@ -230,6 +236,9 @@ async function unitTests() {
     'rm -f -r /tmp/x',
     'rm -R --force /tmp/x',
     'rm --recursive --force /tmp/x',
+    'rm -r somedir',
+    'rm --recursive somedir',
+    'rm -R somedir',
     'sudo rm -r -f /tmp/x',
     'rm /tmp/x -rf',
     'bash -c "rm -rf /"',
@@ -239,6 +248,16 @@ async function unitTests() {
     'rm${IFS}-rf /tmp/x',
     '\\rm -rf /tmp/x',
     '$(which rm) -rf /tmp/x',
+    // Each invocation is judged on its own segment: -f on the first and -r on
+    // the second must not combine into a pass, and -r alone must not pass.
+    'rm a -f; rm b -r',
+    'rm /tmp/x -f; rm /tmp/y -r',
+    'rm a --force; rm b -r',
+    'rm a -f; rm b --recursive',
+    'rm a -f && rm b -r',
+    'rm a -f | rm b -r',
+    'sudo reboot',
+    'systemctl reboot',
     'dd if=/dev/zero of=/dev/sda',
     'mkfs.ext4 /dev/sdb1',
     'wipefs -a /dev/sdb',
@@ -252,8 +271,8 @@ async function unitTests() {
     'echo hello',
     'rm file.txt',
     'rm -f file.txt',
-    'rm -r somedir',
     'rm --force file.txt',
+    'rm a -f; rm -f b',
     'dd if=/dev/zero of=/tmp/file bs=1M count=1',
     'ls /dev/sda',
     'mkfsdir=/tmp/x',
@@ -264,6 +283,16 @@ async function unitTests() {
     'echo rm',
     "grep 'a\\rm' file",
     'echo "remove the file"',
+    // Command-position matching: a keyword as an ARGUMENT is not an invocation.
+    'man fdisk',
+    'apt-cache show fdisk',
+    'grep -rn reboot /var/log/syslog',
+    'journalctl -u systemd-logind | grep -i shutdown',
+    'echo "the mkfs tool formats disks"',
+    'echo reboot',
+    'echo "reboot" > /tmp/note.txt',
+    'systemctl status ssh',
+    'fdisk-preview --help',
   ]) {
     check(`allows ${JSON.stringify(command)}`, bad(command) === null, `reason: ${bad(command)}`)
   }
@@ -303,7 +332,7 @@ async function toolTests(tools, shim) {
 
   const failing = await tools.wsl.execute({ command: 'echo out; echo err 1>&2; exit 7', description: 'fail' })
   eq('exit code 7', failing.exitCode, 7)
-  check('markers rendered', __internals.formatResult(failing, {}) === 'out\n[stderr]\nerr\n[exit code: 7]', JSON.stringify(__internals.formatResult(failing, {})))
+  check('markers rendered', __internals.formatResult(failing) === 'out\n[stderr]\nerr\n[exit code: 7]', JSON.stringify(__internals.formatResult(failing)))
 
   console.log('\nwsl: environment and validation')
   const envResult = await tools.wsl.execute({
@@ -333,6 +362,11 @@ async function toolTests(tools, shim) {
   await rejects('destructive command is refused', () => tools.wsl.execute({
     command: 'rm -rf /tmp/dsh-wsl-guard', description: 'delete',
   }), /refused a destructive command/)
+  // Each rm invocation is judged alone: `-f` on one and `-r` on the next must
+  // not add up to a pass, which is how a recursive delete slipped through.
+  await rejects('split flags across two rm calls are refused', () => tools.wsl.execute({
+    command: 'rm /tmp/dsh-wsl-a -f; rm /tmp/dsh-wsl-b -r', description: 'delete two',
+  }), /recursive delete/)
   const allowed = await tools.wsl.execute({
     command: 'rm -r -f /tmp/dsh-wsl-guard-notexist; echo survived',
     description: 'allowed delete',
@@ -343,8 +377,12 @@ async function toolTests(tools, shim) {
   console.log('\nwsl: timeout')
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })
   eq('timeout is reported as a fact', timedOut.timedOut, true)
-  check('timeout marker rendered', /\[timed out after 900ms; the command was killed\]/.test(__internals.formatResult(timedOut, { timeoutMs: 900 })), JSON.stringify(__internals.formatResult(timedOut, { timeoutMs: 900 })))
-  check('timeout does not report a bare exit code', !/\[exit code:/.test(__internals.formatResult(timedOut, { timeoutMs: 900 })))
+  eq('the effective timeout is reported', timedOut.timeoutMs, 900)
+  check('timeout marker names the effective timeout', /\[timed out after 900ms; the command was killed\]/.test(__internals.formatResult(timedOut)), JSON.stringify(__internals.formatResult(timedOut)))
+  check('timeout does not report a bare exit code', !/\[exit code:/.test(__internals.formatResult(timedOut)))
+  const noTimeoutGiven = await tools.wsl.execute({ command: 'echo default-timeout', description: 'default' })
+  eq('a command without timeoutMs still gets the default', noTimeoutGiven.timeoutMs, 600_000)
+  eq('the default did not trip', noTimeoutGiven.timedOut, false)
 
   console.log('\nwsl: truncation and spill')
   const big = await tools.wsl.execute({ command: 'seq 1 200000', description: 'big output' })
@@ -357,8 +395,23 @@ async function toolTests(tools, shim) {
     const head = readFileSync(big.stdoutSpillPath, 'utf8').slice(0, 6)
     check('spill file starts at the head of the stream', head.startsWith('1\n2\n3'), JSON.stringify(head))
   }
-  const rendered = __internals.formatResult(big, {})
+  const rendered = __internals.formatResult(big)
   check('truncation marker names the spill file', rendered.includes('full stream:') && rendered.includes('bytes'), rendered.split('\n').pop())
+  check('truncation marker quotes the window cap, not a derived count',
+    /at most the last 65536 of 1288895 bytes were kept/.test(rendered), rendered.split('\n').pop())
+
+  // A multi-byte character straddling the byte-trimmed window makes the decoded
+  // text count a replacement character, so a derived "kept" number would claim
+  // MORE than the 64 KiB window. The marker must never do that.
+  const midChar = await tools.wsl.execute({
+    command: `head -c 65534 /dev/zero | tr '\\0' x; awk 'BEGIN{for(i=0;i<40000;i++)printf "\\xe2\\x82\\xac"}'`,
+    description: 'multibyte output',
+  })
+  eq('mid-character stream is truncated', midChar.truncated, true)
+  eq('mid-character total is exact', midChar.stdoutTotalBytes, 65_534 + 120_000)
+  const midRendered = __internals.formatResult(midChar)
+  check('marker never claims more than the cap',
+    /at most the last 65536 of 185534 bytes were kept/.test(midRendered), midRendered.split('\n').pop())
 
   console.log('\nwsl: path translation opt-out')
   const translated = await tools.wsl.execute({ command: "echo 'C:\\Users\\me'", description: 'translated' })

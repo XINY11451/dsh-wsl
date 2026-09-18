@@ -68,7 +68,7 @@ unknown distro is an error rather than a partial answer.
 | `command` | yes | string | Linux command to execute |
 | `description` | yes | string | short UI label |
 | `workdir` | no | string | Linux path (`/home/me`, `~/src`) or Windows path, default `~` |
-| `timeoutMs` | no | number | timeout in milliseconds; the process is killed and the result marked as timed out |
+| `timeoutMs` | no | number | timeout in milliseconds, default 600000 (10 min); the process is killed and the result marked as timed out |
 | `distro` | no | string | WSL distribution name, default `Ubuntu-22.04` |
 | `env` | no | object | extra environment variables to export (keys must be valid shell names) |
 | `allowDangerous` | no | boolean | set `true` to run destructive commands |
@@ -80,18 +80,21 @@ unknown distro is an error rather than a partial answer.
 - The default distro is `Ubuntu-22.04`; override it per call with the `distro` argument or globally with the `DSH_WSL_DISTRO` environment variable. Edit `DEFAULT_DISTRO` in `index.js` to change the fallback.
 - An unknown distro is reported as a clear error (`distribution "X" is not registered`) instead of a raw `-1` exit code.
 - Windows paths in `command` and `workdir` are translated to `/mnt/...` automatically:
-  - `C:\Users\me\a.txt` -> `/mnt/c/Users/me/a.txt`, and paths containing spaces work in either slash style (`C:\Program Files\Git` and `C:/Program Files/Git` both -> `/mnt/c/Program Files/Git`);
+  - `C:\Users\me\a.txt` -> `/mnt/c/Users/me/a.txt`, and paths containing spaces work in either slash style and with several paths on one line: `C:\Program Files\Git`, `C:/Program Files/Git`, `C:\Program Files (x86)\Steam` and `cp C:\a.txt D:\b.txt` (both paths are translated) all behave;
   - `\\wsl.localhost\<distro>\home\x` and `\\wsl$\<distro>\home\x` -> `/home/x`;
-  - a single lowercase letter followed by `/` (`a:/b`) is left alone, since ordinary text is far more likely than a drive path there;
-  - set `translatePaths: false` when the path belongs to a **Windows** program launched through interop — WSL does not translate `/mnt/c/...` back, so `notepad.exe C:\file.txt` needs its original spelling.
+  - text that only *looks* like a drive path is left alone: a single lowercase letter followed by `/` (`a:/b`), a drive letter inside another expression (`sed "s/C:\x/y/"`), and a drive-like segment inside a URL;
+  - set `translatePaths: false` when the path belongs to a **Windows** program launched through interop — WSL does not translate `/mnt/c/...` back, so `notepad.exe C:\file.txt` needs its original spelling. This affects `command` only; `workdir` is always translated.
 - A `~` in `workdir` or in a `wsl-path` argument is expanded by the shell (`~/my dir` works). Any other path is single-quoted, so `$VAR` inside a path is **not** expanded.
 - Output is capped at 64 KiB per stream. The tail is kept and the marker names the spill file holding the **complete** stream, so nothing is unrecoverable:
 
   ```
-  [stdout truncated: kept the last 65536 of 1288895 bytes; full stream: C:\...\stdout.log]
+  [stdout truncated: at most the last 65536 of 1288895 bytes were kept; full stream: C:\...\stdout.log]
   ```
-- `timeoutMs` also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
-- Destructive commands are refused unless the call passes `allowDangerous: true`. The guard checks the *final* command string, so nested forms count, and it covers the separated/long spellings too: `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive --force`, `sudo rm -r -f`, `bash -c "rm -rf /"`, `find . -exec rm -rf {} +`. Obfuscated spellings are normalized before matching (`rm$IFS-rf`, `rm${IFS}-rf`, `\rm -rf`, `$(which rm) -rf`). It also refuses `dd` onto a block device, `mkfs`/partitioning/wiping tools, power control, redirection onto a block device, and fork bombs.
+- `timeoutMs` defaults to 10 minutes so a wedged `wsl.exe` cannot hang the call forever; pass a larger value for genuinely long work. The timeout also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
+- Destructive commands are refused unless the call passes `allowDangerous: true`:
+  - **any recursive delete** — `rm -r`, `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive` — because with stdin on `/dev/null` nothing prompts, so `rm -r tree` deletes silently. Each `rm` invocation is judged on its own command segment, so `rm a -f; rm b -r` cannot combine into a pass;
+  - `dd` onto a block device, `mkfs`, partitioning/wiping tools (`fdisk`, `parted`, `wipefs`, `mkswap`, …), power control (`shutdown`, `reboot`, `systemctl reboot`, …), redirection onto a block device, and fork bombs;
+  - the guard tolerates the ways a command word can be spelled (`sudo rm -r -f`, `bash -c "rm -rf /"`, `find . -exec rm -rf {} +`, `rm$IFS-rf`, `\rm -rf`, `$(which rm) -rf`) but matches device/power tools at **command position**, so inspecting them is fine: `man fdisk`, `grep -rn reboot /var/log/syslog` and `echo "the mkfs tool formats disks"` all run.
 - Repeated launcher noise is stripped from stderr: the localhost-proxy warning and procps' `screen size is bogus` line.
 - Uses `wsl.exe -e` (`--exec`) so quoting and `$VAR` expansion behave like a normal shell; the default `--` pass-through mangles single quotes and variables.
 
@@ -112,18 +115,22 @@ The plugin is a cordis module that injects the host-plane `tools` and
 - Every call goes through one spawn path (`spawnWsl`): `wsl.exe -d <distro> -e
   bash -lc "<exports; cd workdir && command>"` through the host `subprocess`
   service, with stdout/stderr capped at 64 KiB (spilling to disk up to 64 MiB), a
-  3 s grace period after abort, and an optional `timeoutMs` that aborts the call.
-  The plugin's own probes additionally get a 30 s ceiling so a wedged WSL service
-  cannot hang a tool call forever.
+  3 s grace period after abort, and a deadline that defaults to 10 minutes. The
+  plugin's own probes get a 30 s ceiling so a wedged WSL service cannot hang a
+  tool call forever.
 - `env` entries are exported at the front of the command so they reach the
   Linux side reliably; Windows drive paths are rewritten to `/mnt/...` before
   the command is built.
-- Output is returned as `{ exitCode, signal, timedOut, truncated, stdout, stderr,
-  stdoutTotalBytes, stdoutDroppedBytes, stderrTotalBytes, stderrDroppedBytes,
-  stdoutSpillPath, stderrSpillPath }`; the `render` hook formats it into text
-  with the markers listed above.
-- A destructive-command guard runs on the final command string before dispatch
-  and refuses matched patterns unless `allowDangerous` is set.
+- Output is returned as `{ exitCode, signal, timedOut, timeoutMs, truncated,
+  stdout, stderr, stdoutTotalBytes, stdoutDroppedBytes, stderrTotalBytes,
+  stderrDroppedBytes, stdoutSpillPath, stderrSpillPath }`; the `render` hook
+  formats it into text with the markers listed above. The truncation marker
+  quotes the 64 KiB window rather than a count derived from the decoded text,
+  which can be off by a byte or two when the window starts inside a multi-byte
+  character.
+- A destructive-command guard splits the command into `;`/`&`/`|`/newline
+  segments, judges each `rm` invocation on its own flags, and matches the
+  device/power tools at command position before dispatch.
 
 The plugin publishes no services of its own, so it sits loose in an agent
 preset without a realm.
