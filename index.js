@@ -123,6 +123,10 @@ async function runWsl(ctx, command, opts = {}) {
   try {
     const handle = ctx.subprocess.spawn({
       argv: ['wsl.exe', '-d', distro, '-e', 'bash', '-lc', full],
+      // Required by the dsh 0.1.5 subprocess seam: every spawn spec states its
+      // own working directory. The Linux-side directory is set by the `cd`
+      // prefix above, so the Windows-side cwd only has to be a real directory.
+      cwd: process.cwd(),
       env: WSL_SPAWN_ENV,
       stdio: {
         stdin: 'ignore',
@@ -361,6 +365,7 @@ async function runWslRaw(ctx, argv) {
   try {
     const handle = ctx.subprocess.spawn({
       argv,
+      cwd: process.cwd(),
       env: WSL_SPAWN_ENV,
       stdio: {
         stdin: 'ignore',
