@@ -45,9 +45,29 @@ preset 组合里有 `@deepseek-ai/dsh-tool-jobs`；没有时会直接报错说�
 
 ### `wsl-env`
 
-返回发行版列表、被探测的发行版、内核、CPU 数、内存与磁盘占用，让智能体了解自己
-运行在什么环境里。可传可选参数 `distro`。探测失败会写进摘要而不是被丢掉；发行版
-不存在则直接报错，而不是给出一份残缺答案。
+返回发行版列表、被探测的发行版、内核与架构、CPU 数、内存与磁盘占用，以及这台机器
+**实际能做什么**：
+
+```
+distro: Ubuntu-22.04 (system default)
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+nproc: 24
+Ubuntu 22.04.5 LTS · WSL2 · cgroup v2
+systemd: yes · docker: not installed
+GPU: /dev/dxg present (GPU passthrough enabled) · nvidia-smi: GPU 0: NVIDIA GeForce RTX 5070 Laptop GPU
+drives: /mnt/c /mnt/d
+/etc/wsl.conf: [boot];systemd=true;[user];default=xiny; · .wslconfig: not set
+launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71 · Windows: 10.0.26200.9457
+```
+
+让智能体在动手前就知道有什么可用：WSL1 还是 WSL2、服务是否由 systemd 托管、cgroup 版本
+（容器相关）、GPU 直通、docker（未装／只有 CLI／守护进程版本）、挂载了哪些盘，以及
+`/etc/wsl.conf` 与 Windows 侧 `.wslconfig` 的配置。可传可选参数 `distro`。
+
+每一项都是可选的，且如实降级：探针没跑成的行会被省略，读到了但为空的值会写明
+（`docker: not installed`、`.wslconfig: not set`），探测失败会写进摘要而不是被丢掉，
+发行版不存在则直接报错，而不是给出一份残缺答案。注意 `wsl --version` 输出是**本地化**的，
+因此其标签按启动器原样透传、不按名称解析；Direct3D/MSRDC/DXCore 版本作为噪声被省略。
 
 ## 安装
 
@@ -162,6 +182,7 @@ preset 组合里有 `@deepseek-ai/dsh-tool-jobs`；没有时会直接报错说�
 | `lib/paths.js` | shell 引号处理与 Windows → WSL 路径转换 |
 | `lib/guard.js` | 危险命令规则 |
 | `lib/result.js` | 启动器噪声过滤、截断事实、标记渲染 |
+| `lib/diagnostics.js` | `wsl-env` 的能力探针、解析器与输出行 |
 | `lib/runner.js` | 唯一的 spawn 路径与启动器错误分类 |
 | `lib/tools/*.js` | 三个工具定义（schema / execute / presentCall） |
 
@@ -201,7 +222,7 @@ preset 组合里有 `@deepseek-ai/dsh-tool-jobs`；没有时会直接报错说�
 ### 测试
 
 ```sh
-npm test          # 210+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
+npm test          # 240+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

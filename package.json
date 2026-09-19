@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Model-facing WSL tool: execute Linux commands through wsl.exe from Windows.",
   "type": "module",
   "main": "index.js",

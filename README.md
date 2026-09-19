@@ -49,10 +49,33 @@ auto-detected from the path, or forced with `direction: 'win' | 'linux'`.
 
 ### `wsl-env`
 
-Returns the distribution list, the probed distro, kernel, CPU count, memory and
-disk usage so an agent knows what it is running on. Takes an optional `distro`.
-A probe that fails is reported in the summary instead of being dropped, and an
-unknown distro is an error rather than a partial answer.
+Returns the distribution list, the probed distro, kernel and architecture, CPU
+count, memory and disk usage, and what the machine can actually **do**:
+
+```
+distro: Ubuntu-22.04 (system default)
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+nproc: 24
+Ubuntu 22.04.5 LTS · WSL2 · cgroup v2
+systemd: yes · docker: not installed
+GPU: /dev/dxg present (GPU passthrough enabled) · nvidia-smi: GPU 0: NVIDIA GeForce RTX 5070 Laptop GPU
+drives: /mnt/c /mnt/d
+/etc/wsl.conf: [boot];systemd=true;[user];default=xiny; · .wslconfig: not set
+launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71 · Windows: 10.0.26200.9457
+```
+
+so an agent can decide what is available before running commands: WSL1 vs WSL2,
+whether systemd manages services, the cgroup version (matters for containers),
+GPU passthrough, docker (installed / cli-only / daemon version), which drives are
+mounted, and how `/etc/wsl.conf` and the Windows-side `.wslconfig` are
+configured. Takes an optional `distro`.
+
+Every fact is optional and degrades honestly: a probe that cannot run leaves its
+line out, an empty value is stated (`docker: not installed`, `.wslconfig: not
+set`), a failed probe is reported in the summary instead of being dropped, and an
+unknown distro is an error rather than a partial answer. Note that `wsl --version`
+is **localized**, so its labels are passed through as the launcher printed them
+rather than parsed by name; the Direct3D/MSRDC/DXCore versions are omitted.
 
 ## Install
 
@@ -152,6 +175,7 @@ is split by concern:
 | `lib/paths.js` | Shell quoting and Windows -> WSL path translation. |
 | `lib/guard.js` | The destructive-command rules. |
 | `lib/result.js` | Launcher-noise filters, truncation facts, marker rendering. |
+| `lib/diagnostics.js` | The `wsl-env` capability probe, its parser and its lines. |
 | `lib/runner.js` | The single spawn path plus launcher-error classification. |
 | `lib/tools/*.js` | The three tool definitions (schema, execute, presentCall). |
 
@@ -203,7 +227,7 @@ containing the `tool-wsl` row.
 ### Tests
 
 ```sh
-npm test          # 210+ checks against real WSL, with a shim standing in for ctx.subprocess
+npm test          # 240+ checks against real WSL, with a shim standing in for ctx.subprocess
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

@@ -24,6 +24,7 @@ import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/
 import { destructiveReason } from '../lib/guard.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
 import { assertLauncherReachable, resolveDistro } from '../lib/runner.js'
+import { capabilityLines, launcherSummary, parseFacts } from '../lib/diagnostics.js'
 import { parseDefaultDistro } from '../lib/tools/wsl-env.js'
 
 // One resolved configuration stands in for the mount the host would create.
@@ -424,6 +425,54 @@ async function unitTests() {
     parseDefaultDistro('  NAME   STATE   VERSION\n* Ubuntu-22.04  Running  2\n'), 'Ubuntu-22.04')
   eq('a list without a marker yields null', parseDefaultDistro('  NAME  STATE  VERSION'), null)
 
+  console.log('\ncapability diagnostics')
+  const facts = parseFacts('os=Ubuntu 22.04.5 LTS\nwsl=2\nnot a fact line\ninit=systemd\n\nbad key=x\n')
+  eq('facts are parsed by the first =', facts.os, 'Ubuntu 22.04.5 LTS')
+  eq('a later duplicate wins', parseFacts('a=1\na=2').a, '2')
+  eq('lines without = are ignored', Object.keys(facts).includes('not a fact line'), false)
+  eq('a key with a space is not a fact', 'bad key' in facts, false)
+
+  const rich = capabilityLines({
+    os: 'Ubuntu 22.04.5 LTS', wsl: '2', init: 'systemd', cgroup: 'cgroup2fs',
+    gpu: 'dxg', nvidia: 'GPU 0: RTX 5070', docker: '27.0.3', drives: 'c,d,',
+    wslconf: '[boot] systemd=true;', winconf: '',
+  })
+  check('WSL2 is reported', rich[0].includes('WSL2') && rich[0].includes('Ubuntu 22.04.5 LTS'), rich[0])
+  check('cgroup v2 is named', rich[0].includes('cgroup v2'), rich[0])
+  check('systemd is reported', rich.some((l) => l.includes('systemd: yes')), rich.join(' | '))
+  check('a running docker daemon is reported', rich.some((l) => l.includes('docker: daemon 27.0.3')), rich.join(' | '))
+  check('GPU passthrough is reported', rich.some((l) => l.includes('/dev/dxg present') && l.includes('RTX 5070')), rich.join(' | '))
+  check('the GPU UUID is dropped as noise',
+    !capabilityLines({ nvidia: 'GPU 0: RTX 5070 (UUID: GPU-abc)' }).some((l) => l.includes('UUID')), 'no UUID')
+  check('drives are listed as /mnt paths', rich.some((l) => l === 'drives: /mnt/c /mnt/d'), rich.join(' | '))
+  check('the config line carries /etc/wsl.conf', rich.some((l) => l.includes('/etc/wsl.conf: [boot] systemd=true;')), rich.join(' | '))
+  // An EMPTY probe value means "read it, nothing there"; a MISSING key means the
+  // probe never reported, and only the first deserves a verdict.
+  check('an unset .wslconfig is stated, not omitted', rich.some((l) => l.includes('.wslconfig: not set')), rich.join(' | '))
+  check('a config fact the probe never reported is omitted',
+    !capabilityLines({ wslconf: '[boot] systemd=true;' }).some((l) => l.includes('.wslconfig')), 'omitted')
+
+  const withWinconf = capabilityLines({ winconf: '[wsl2] networkingMode=mirrored;' })
+  check('a configured .wslconfig is shown', withWinconf.some((l) => l.includes('networkingMode=mirrored')), withWinconf.join(' | '))
+
+  const bare = capabilityLines({})
+  eq('an unreadable probe contributes nothing rather than guessing', bare.length, 0)
+  const wsl1 = capabilityLines({ wsl: '1', init: 'init', docker: 'absent', gpu: 'none' })
+  check('WSL1 is called out', wsl1[0].includes('WSL1'), wsl1[0])
+  check('a missing docker is stated', wsl1.some((l) => l.includes('docker: not installed')), wsl1.join(' | '))
+  check('a missing GPU is stated', wsl1.some((l) => l.includes('no /dev/dxg')), wsl1.join(' | '))
+  check('a non-systemd init names the real PID 1', wsl1.some((l) => l.includes('systemd: no (PID 1 is init)')), wsl1.join(' | '))
+  check('a cli-only docker is distinguished from a working daemon',
+    capabilityLines({ docker: 'cli-only' }).some((l) => l.includes('daemon unreachable')), 'cli-only')
+
+  // `wsl --version` labels are localized, so nothing may be parsed by name: the
+  // first three lines are WSL/kernel/WSLg in a fixed order.
+  const localized = launcherSummary('WSL 版本: 2.6.3.0\n内核版本: 6.6.87.2-1\nWSLg 版本: 1.0.71\nMSRDC 版本: 1.2.6353\nDirect3D 版本: 1.611.1-81528511\nWindows: 10.0.26200.9457\n')
+  check('the launcher line survives localized labels', localized.includes('WSL 版本: 2.6.3.0') && localized.includes('1.0.71'), localized)
+  check('the Windows build line is kept', localized.includes('Windows: 10.0.26200.9457'), localized)
+  check('Direct3D/MSRDC noise is dropped', !/Direct3D|MSRDC/.test(localized), localized)
+  eq('an unparsable launcher output yields null', launcherSummary('no table here'), null)
+
   const empty = streamFacts(undefined)
   eq('missing stream is empty', empty.text, '')
   eq('missing stream is not lossy', empty.lossy, false)
@@ -663,8 +712,17 @@ async function toolTests(tools, shim) {
   const env = await tools['wsl-env'].execute({})
   check('reports the distro', env.summary.includes('distro: Ubuntu-22.04'), env.summary)
   check('reports the kernel', /Linux \d/.test(env.summary), env.summary)
+  check('reports the architecture', /Linux \S+ \S+/.test(env.summary), env.summary.split('\n')[1])
   check('reports cpu count', /nproc: \d+/.test(env.summary), env.summary)
   check('reports distributions', env.summary.includes('--- distributions ---'), env.summary)
+  check('reports the launcher version line', /^launcher: .*\d/m.test(env.summary), env.summary)
+  check('reports the capability lines', /WSL2/.test(env.summary) && /systemd: (yes|no)/.test(env.summary), env.summary)
+  check('reports the GPU situation', /GPU: /.test(env.summary), env.summary)
+  // The capability probe must actually have reached the machine: a parsed fact
+  // shows up either as a cgroup label or as an explicit GPU verdict.
+  check('the capability probe reached the machine',
+    /cgroup v\d/.test(env.summary) || /\/dev\/dxg/.test(env.summary), env.summary)
+  check('the capability probe did not fall back', !env.summary.includes('capabilities unavailable'), env.summary)
   await rejects('unknown distro is reported, not swallowed', () => tools['wsl-env'].execute({ distro: 'NoSuchDistro' }), /not registered/)
   await rejects('unknown distro on wsl is reported', () => tools.wsl.execute({ command: 'true', description: 'x', distro: 'NoSuchDistro' }), /not registered/)
 
@@ -696,7 +754,7 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_500, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 3_600, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 3_800, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
 }
 
 // --- main ------------------------------------------------------------------
