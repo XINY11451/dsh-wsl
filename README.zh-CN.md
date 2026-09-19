@@ -154,7 +154,9 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
   **实际生效**的那个期限。到点会连 Linux 侧进程一起杀掉（Windows 上由 provider 使用 `taskkill /T /F`）。
 - **宿主 shell 的环境事实会转发进发行版**（WSL 默认不跨边界传 Windows 环境变量）：`DSH_SESSION_ID`、
   `DSH_SHELL`、以及翻译成 `/mnt/...` 形式的 `DSH_HOME` 会在命令前 `export`，脚本因此能看到与平台自带
-  shell 工具一致的会话事实。**`DSH_WEB_URL` 故意不转发**——它是 Windows 侧服务的 `127.0.0.1` 地址，
+  shell 工具一致的会话事实。这些值**按次**从宿主的 `shellEnv` 注册表解析（与其他 shell 工具同一个来源），
+  因为它们属于会话而非宿主常量——直接读宿主 `process.env` 会什么都读不到、静默地什么都不转发。
+  **`DSH_WEB_URL` 故意不转发**——它是 Windows 侧服务的 `127.0.0.1` 地址，
   而默认 NAT 模式下 WSL 访问不到 Windows 回环（实测 `127.0.0.1` 与主机 IP 均返回 HTTP 000，服务本身
   也只绑回环），转进去只会给一个打不开的 URL。显式传入的 `env` 条目总是覆盖转发值。
 - `wsl-env` 还会报出**会话文件所在的位置**以及它是否落在 Windows 盘挂载上：

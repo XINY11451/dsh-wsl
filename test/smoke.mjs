@@ -23,7 +23,7 @@ import { resolveConfig } from '../lib/config.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
 import { destructiveReason } from '../lib/guard.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
-import { assertLauncherReachable, resolveDistro } from '../lib/runner.js'
+import { assertLauncherReachable, collectForwardEnv, resolveDistro, sessionCwdOf } from '../lib/runner.js'
 import { capabilityLines, launcherSummary, parseFacts, workspaceLine } from '../lib/diagnostics.js'
 import { parseDefaultDistro } from '../lib/tools/wsl-env.js'
 
@@ -238,13 +238,13 @@ function makeJobs() {
   }
 }
 
-function makeCtx(shim, { jobs } = {}) {
+function makeCtx(shim, { jobs, shellEnv } = {}) {
   const tools = {}
   const ctx = {
     tools: { register(tool) { tools[tool.name] = tool } },
     subprocess: shim,
-    // Optional service: the plugin must also work when this returns undefined.
-    get: (name) => (name === 'jobs' ? jobs : undefined),
+    // Optional services: the plugin must work when these return undefined.
+    get: (name) => (name === 'jobs' ? jobs : name === 'shellEnv' ? shellEnv : undefined),
   }
   apply(ctx)
   return tools
@@ -399,15 +399,48 @@ async function unitTests() {
     resolveConfig({ DSH_WSL_TIMEOUT_MS: '90000000', DSH_WSL_MAX_TIMEOUT_MS: '60000' }).commandTimeoutMs, 60_000)
 
   // Host shell facts reach the Linux side, because WSL drops Windows env vars.
-  const forwards = resolveConfig({
-    DSH_SESSION_ID: 'session-abc', DSH_SHELL: '1', DSH_HOME: 'C:\\Users\\me\\.dsh', DSH_WEB_URL: 'http://127.0.0.1:3080',
-  }).forwardEnv
-  eq('the session id is forwarded', forwards.DSH_SESSION_ID, 'session-abc')
-  eq('DSH_SHELL is forwarded', forwards.DSH_SHELL, '1')
-  eq('DSH_HOME is forwarded as its /mnt view', forwards.DSH_HOME, '/mnt/c/Users/me/.dsh')
+  // They are PER-EXECUTION — the session id cannot be a host constant, since one
+  // host serves many sessions — so the source is the host's own shell-env
+  // registry, which is also what the platform's shell tools read.
+  const execution = { agent: { session: { header: { id: 'session-abc', cwd: 'D:\\work' } } } }
+  eq('the session workspace comes from the execution', sessionCwdOf(execution), 'D:\\work')
+  eq('a caller without a session yields nothing', sessionCwdOf(undefined), undefined)
+  eq('a malformed session yields nothing', sessionCwdOf({ agent: { session: {} } }), undefined)
+  eq('an empty session cwd yields nothing', sessionCwdOf({ agent: { session: { header: { cwd: '' } } } }), undefined)
+
+  const shellEnvCtx = {
+    get: (name) => (name === 'shellEnv'
+      ? {
+        collect: (exec) => ({
+          DSH_SESSION_ID: exec?.agent?.session?.header?.id,
+          DSH_SHELL: '1',
+          DSH_HOME: 'C:\\Users\\me\\.dsh',
+          DSH_WEB_URL: 'http://127.0.0.1:3080',
+        }),
+      }
+      : undefined),
+  }
+  const forwarded = collectForwardEnv(shellEnvCtx, execution)
+  eq('the session id is taken from the execution', forwarded.DSH_SESSION_ID, 'session-abc')
+  eq('DSH_SHELL is forwarded', forwarded.DSH_SHELL, '1')
+  eq('DSH_HOME is forwarded as its /mnt view', forwarded.DSH_HOME, '/mnt/c/Users/me/.dsh')
   check('DSH_WEB_URL is NOT forwarded (unreachable from WSL in NAT mode)',
-    !('DSH_WEB_URL' in forwards), JSON.stringify(forwards))
-  eq('an absent host variable is not invented', 'DSH_SESSION_ID' in resolveConfig({}).forwardEnv, false)
+    !('DSH_WEB_URL' in forwarded), JSON.stringify(forwarded))
+  // The fallback must stay narrow: whatever the ambient environment happens to
+  // hold, only allowlisted keys may be forwarded, and DSH_WEB_URL never is.
+  const noRegistry = collectForwardEnv({ get: () => undefined }, {})
+  check('the process.env fallback forwards only allowlisted keys',
+    Object.keys(noRegistry).every((key) => ['DSH_SESSION_ID', 'DSH_SHELL', 'DSH_HOME'].includes(key)),
+    JSON.stringify(noRegistry))
+  check('DSH_WEB_URL is never forwarded, registry or not', !('DSH_WEB_URL' in noRegistry), JSON.stringify(noRegistry))
+  check('a throwing registry is contained rather than fatal', (() => {
+    try {
+      collectForwardEnv({ get: () => ({ collect() { throw new Error('boom') } }) }, execution)
+      return true
+    } catch {
+      return false
+    }
+  })())
   // A typo must not take the tools down, and must not yield an absurd value.
   eq('unparsable timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: 'soon' }).commandTimeoutMs, 600_000)
   eq('zero timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: '0' }).commandTimeoutMs, 600_000)
@@ -649,20 +682,32 @@ async function toolTests(tools, shim) {
   }), /cannot also carry `stdin`/)
 
   console.log('\nwsl: forwarded host environment')
-  const previousSessionId = process.env.DSH_SESSION_ID
-  process.env.DSH_SESSION_ID = 'session-smoke-test'
-  try {
-    // `apply()` reads the environment at mount — exactly what a restart does.
-    const forwardingTools = makeCtx(shim, { jobs })
-    const seen = await forwardingTools.wsl.execute({ command: 'printenv DSH_SESSION_ID', description: 'forwarded env' })
-    eq('the host session id reaches the Linux side', seen.stdout.trim(), 'session-smoke-test')
-    const overridden = await forwardingTools.wsl.execute({
-      command: 'printenv DSH_SESSION_ID', description: 'explicit wins', env: { DSH_SESSION_ID: 'explicit-wins' },
+  {
+    // The values are per-execution, so they come from the host's shell-env
+    // registry via the exec context — never from the host's own process.env,
+    // which is why a process.env-only implementation forwards nothing.
+    const forwardingTools = makeCtx(shim, {
+      jobs,
+      shellEnv: {
+        collect: (exec) => ({
+          DSH_SESSION_ID: exec?.agent?.session?.header?.id,
+          DSH_HOME: 'C:\\Users\\me\\.dsh',
+          DSH_WEB_URL: 'http://127.0.0.1:3080',
+        }),
+      },
     })
+    const exec = { agent: { session: { header: { id: 'session-smoke-test', cwd: 'D:\\smoke-ws' } } } }
+    const seen = await forwardingTools.wsl.execute({ command: 'printenv DSH_SESSION_ID', description: 'forwarded env' }, exec)
+    eq('the session id reaches the Linux side', seen.stdout.trim(), 'session-smoke-test')
+    const home = await forwardingTools.wsl.execute({ command: 'printenv DSH_HOME', description: 'forwarded home' }, exec)
+    eq('DSH_HOME arrives as a /mnt path', home.stdout.trim(), '/mnt/c/Users/me/.dsh')
+    const url = await forwardingTools.wsl.execute({ command: 'printenv DSH_WEB_URL || echo unset', description: 'url stays out' }, exec)
+    eq('DSH_WEB_URL stays out of the distro', url.stdout.trim(), 'unset')
+    const overridden = await forwardingTools.wsl.execute(
+      { command: 'printenv DSH_SESSION_ID', description: 'explicit wins', env: { DSH_SESSION_ID: 'explicit-wins' } },
+      exec,
+    )
     eq('an explicit env entry overrides the forwarded one', overridden.stdout.trim(), 'explicit-wins')
-  } finally {
-    if (previousSessionId === undefined) delete process.env.DSH_SESSION_ID
-    else process.env.DSH_SESSION_ID = previousSessionId
   }
 
   console.log('\nwsl: timeout ceiling')
@@ -678,10 +723,22 @@ async function toolTests(tools, shim) {
     // `apply()` reads the environment at mount, which is exactly what a restart
     // does, so a second mount is how a deployment switches this on.
     const sessionTools = makeCtx(shim, { jobs })
-    const sessionPwd = await sessionTools.wsl.execute({ command: 'pwd', description: 'session cwd' })
-    eq('the default workdir follows the session cwd', sessionPwd.stdout.trim(), windowsPathToWsl(process.cwd()))
-    const overridden = await sessionTools.wsl.execute({ command: 'pwd', description: 'explicit wins', workdir: '~/.' })
-    eq('an explicit workdir still wins', overridden.stdout.trim(), '/home/xiny')
+    // The SESSION's workspace, not the directory the host was launched from —
+    // and a real directory, so `cd` proves which one was used.
+    const sessionDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-session-'))
+    try {
+      const exec = { agent: { session: { header: { cwd: sessionDir } } } }
+      const sessionPwd = await sessionTools.wsl.execute({ command: 'pwd', description: 'session cwd' }, exec)
+      eq('the default workdir follows the session workspace',
+        sessionPwd.stdout.trim(), windowsPathToWsl(sessionDir))
+      const noSession = await sessionTools.wsl.execute({ command: 'pwd', description: 'no session' })
+      eq('without a session it falls back to the process cwd',
+        noSession.stdout.trim(), windowsPathToWsl(process.cwd()))
+      const overridden = await sessionTools.wsl.execute({ command: 'pwd', description: 'explicit wins', workdir: '~/.' }, exec)
+      eq('an explicit workdir still wins', overridden.stdout.trim(), '/home/xiny')
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true })
+    }
   } finally {
     if (previousWorkdir === undefined) delete process.env.DSH_WSL_WORKDIR
     else process.env.DSH_WSL_WORKDIR = previousWorkdir
