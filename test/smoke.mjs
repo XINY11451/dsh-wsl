@@ -24,7 +24,7 @@ import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/
 import { destructiveReason } from '../lib/guard.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
 import { assertLauncherReachable, resolveDistro } from '../lib/runner.js'
-import { capabilityLines, launcherSummary, parseFacts } from '../lib/diagnostics.js'
+import { capabilityLines, launcherSummary, parseFacts, workspaceLine } from '../lib/diagnostics.js'
 import { parseDefaultDistro } from '../lib/tools/wsl-env.js'
 
 // One resolved configuration stands in for the mount the host would create.
@@ -390,6 +390,24 @@ async function unitTests() {
   eq('workdir "session" means the process cwd', resolveConfig({ DSH_WSL_WORKDIR: 'session' }).defaultWorkdir, null)
   eq('any other workdir is an explicit default path',
     resolveConfig({ DSH_WSL_WORKDIR: 'D:\\proj' }).defaultWorkdir, 'D:\\proj')
+
+  // A per-call deadline is capped like the platform shell tools cap theirs.
+  eq('the timeout ceiling has a default', resolveConfig({}).maxCommandTimeoutMs, 86_400_000)
+  eq('DSH_WSL_MAX_TIMEOUT_MS overrides the ceiling', resolveConfig({ DSH_WSL_MAX_TIMEOUT_MS: '60000' }).maxCommandTimeoutMs, 60_000)
+  eq('a silly ceiling falls back', resolveConfig({ DSH_WSL_MAX_TIMEOUT_MS: '0' }).maxCommandTimeoutMs, 86_400_000)
+  eq('the default deadline obeys the ceiling',
+    resolveConfig({ DSH_WSL_TIMEOUT_MS: '90000000', DSH_WSL_MAX_TIMEOUT_MS: '60000' }).commandTimeoutMs, 60_000)
+
+  // Host shell facts reach the Linux side, because WSL drops Windows env vars.
+  const forwards = resolveConfig({
+    DSH_SESSION_ID: 'session-abc', DSH_SHELL: '1', DSH_HOME: 'C:\\Users\\me\\.dsh', DSH_WEB_URL: 'http://127.0.0.1:3080',
+  }).forwardEnv
+  eq('the session id is forwarded', forwards.DSH_SESSION_ID, 'session-abc')
+  eq('DSH_SHELL is forwarded', forwards.DSH_SHELL, '1')
+  eq('DSH_HOME is forwarded as its /mnt view', forwards.DSH_HOME, '/mnt/c/Users/me/.dsh')
+  check('DSH_WEB_URL is NOT forwarded (unreachable from WSL in NAT mode)',
+    !('DSH_WEB_URL' in forwards), JSON.stringify(forwards))
+  eq('an absent host variable is not invented', 'DSH_SESSION_ID' in resolveConfig({}).forwardEnv, false)
   // A typo must not take the tools down, and must not yield an absurd value.
   eq('unparsable timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: 'soon' }).commandTimeoutMs, 600_000)
   eq('zero timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: '0' }).commandTimeoutMs, 600_000)
@@ -476,6 +494,16 @@ async function unitTests() {
   const empty = streamFacts(undefined)
   eq('missing stream is empty', empty.text, '')
   eq('missing stream is not lossy', empty.lossy, false)
+
+  console.log('\nworkspace placement hint')
+  const onWindowsMount = workspaceLine('D:\\DSHworkarea')
+  check('a Windows-mount workspace is named with its mount',
+    onWindowsMount.includes('workspace: /mnt/d/DSHworkarea') && onWindowsMount.includes('/mnt/d'), onWindowsMount)
+  check('and it warns about the cost of building there', /much slower/.test(onWindowsMount), onWindowsMount)
+  const onLinuxFs = workspaceLine('/home/xiny/proj')
+  check('a Linux-filesystem workspace says so plainly',
+    onLinuxFs === 'workspace: /home/xiny/proj (Linux filesystem)', onLinuxFs)
+  eq('an inexpressible directory yields no line', workspaceLine(''), null)
 }
 
 // --- tool-level tests ------------------------------------------------------
@@ -620,6 +648,29 @@ async function toolTests(tools, shim) {
     command: `echo ${'x'.repeat(31_000)}`, description: 'both', stdin: 'data',
   }), /cannot also carry `stdin`/)
 
+  console.log('\nwsl: forwarded host environment')
+  const previousSessionId = process.env.DSH_SESSION_ID
+  process.env.DSH_SESSION_ID = 'session-smoke-test'
+  try {
+    // `apply()` reads the environment at mount — exactly what a restart does.
+    const forwardingTools = makeCtx(shim, { jobs })
+    const seen = await forwardingTools.wsl.execute({ command: 'printenv DSH_SESSION_ID', description: 'forwarded env' })
+    eq('the host session id reaches the Linux side', seen.stdout.trim(), 'session-smoke-test')
+    const overridden = await forwardingTools.wsl.execute({
+      command: 'printenv DSH_SESSION_ID', description: 'explicit wins', env: { DSH_SESSION_ID: 'explicit-wins' },
+    })
+    eq('an explicit env entry overrides the forwarded one', overridden.stdout.trim(), 'explicit-wins')
+  } finally {
+    if (previousSessionId === undefined) delete process.env.DSH_SESSION_ID
+    else process.env.DSH_SESSION_ID = previousSessionId
+  }
+
+  console.log('\nwsl: timeout ceiling')
+  const capped = await tools.wsl.execute({ command: 'echo capped', description: 'capped timeout', timeoutMs: 999_999_999 })
+  eq('a huge timeoutMs is capped at the ceiling', capped.timeoutMs, 86_400_000)
+  eq('the capped command still ran', capped.stdout.trim(), 'capped')
+  eq('capping is not a timeout', capped.timedOut, false)
+
   console.log('\nwsl: DSH_WSL_WORKDIR=session')
   const previousWorkdir = process.env.DSH_WSL_WORKDIR
   process.env.DSH_WSL_WORKDIR = 'session'
@@ -736,6 +787,7 @@ async function toolTests(tools, shim) {
   check('reports the launcher version line', /^launcher: .*\d/m.test(env.summary), env.summary)
   check('reports the capability lines', /WSL2/.test(env.summary) && /systemd: (yes|no)/.test(env.summary), env.summary)
   check('reports the GPU situation', /GPU: /.test(env.summary), env.summary)
+  check('names where the session files live', /^workspace: \//m.test(env.summary), env.summary)
   // The capability probe must actually have reached the machine: a parsed fact
   // shows up either as a cgroup label or as an explicit GPU verdict.
   check('the capability probe reached the machine',

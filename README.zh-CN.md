@@ -109,6 +109,7 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 |---|---|---|
 | `DSH_WSL_DISTRO` | （系统默认） | 为所有调用固定发行版 |
 | `DSH_WSL_TIMEOUT_MS` | `600000` | 模型命令的默认超时；单次调用可用 `timeoutMs` 覆盖 |
+| `DSH_WSL_MAX_TIMEOUT_MS` | `86400000` | 单次 `timeoutMs` 的上限，对齐平台 shell 工具的 `maxTimeoutMs`；默认超时也受它约束 |
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | 每条流的内存窗口（1 KiB – 8 MiB）；设到 64 MiB 以上时也会抬高落盘上限 |
 | `DSH_WSL_WORKDIR` | `home` | 不传 `workdir` 时的起点：`home`（Linux 的 `~`）、`session`（会话工作目录，Windows 检出对应 `/mnt/<盘>/...`），或任意显式路径 |
 
@@ -148,8 +149,22 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
   ```
   [stdout truncated: at most the last 65536 of 1288895 bytes were kept; full stream: C:\...\stdout.log]
   ```
-- `timeoutMs` 默认 10 分钟，避免卡死的 `wsl.exe` 永久挂住调用；确实需要长时间运行的命令
-  传更大的值即可。到点会连 Linux 侧进程一起杀掉（Windows 上由 provider 使用 `taskkill /T /F`）。
+- `timeoutMs` 默认 10 分钟，避免卡死的 `wsl.exe` 永久挂住调用；需要长时间运行的命令可以传更大的值，
+  但上限是 `DSH_WSL_MAX_TIMEOUT_MS`（默认 24 小时）——手滑不会变成"永不超时"。结果里回报的始终是
+  **实际生效**的那个期限。到点会连 Linux 侧进程一起杀掉（Windows 上由 provider 使用 `taskkill /T /F`）。
+- **宿主 shell 的环境事实会转发进发行版**（WSL 默认不跨边界传 Windows 环境变量）：`DSH_SESSION_ID`、
+  `DSH_SHELL`、以及翻译成 `/mnt/...` 形式的 `DSH_HOME` 会在命令前 `export`，脚本因此能看到与平台自带
+  shell 工具一致的会话事实。**`DSH_WEB_URL` 故意不转发**——它是 Windows 侧服务的 `127.0.0.1` 地址，
+  而默认 NAT 模式下 WSL 访问不到 Windows 回环（实测 `127.0.0.1` 与主机 IP 均返回 HTTP 000，服务本身
+  也只绑回环），转进去只会给一个打不开的 URL。显式传入的 `env` 条目总是覆盖转发值。
+- `wsl-env` 还会报出**会话文件所在的位置**以及它是否落在 Windows 盘挂载上：
+
+  ```
+  workspace: /mnt/d/DSHworkarea (Windows drive mount /mnt/d — builds, installs and git are much slower here; prefer a path under /home when it matters)
+  ```
+
+  这个提示值得当真。作者机器实测：128 MB 顺序写在 ext4 上约 **2.1 GB/s**，在 `/mnt/d` 上约 **247 MB/s**；
+  创建 400 个小文件 ext4 **不到 10 ms**，`/mnt/d` 要 **0.72 s**。
 - 危险命令默认被拒绝，除非调用时传 `allowDangerous: true`：
   - **任何递归删除**——`rm -r`、`rm -rf`、`rm -r -f`、`rm -R --force`、`rm --recursive`——
     因为 stdin 指向 `/dev/null` 时不会产生任何提示，`rm -r tree` 会静默删除整棵树。
@@ -164,6 +179,23 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
   `screen size is bogus` 行。
 - 使用 `wsl.exe -e`（`--exec`），引号与 `$VAR` 展开行为与普通 shell 一致；
   默认的 `--` 透传会破坏单引号和变量。
+
+## 沙箱边界
+
+DSH 的文件沙箱在**两个点**实施：shell 执行器（`@deepseek-ai/dsh-bash-sandbox`、`-pwsh-sandbox`，把
+argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-sandbox`，对两个写操作加策略栅栏）。
+**`wsl` 两者都不经过**——它通过宿主 `subprocess` 服务直接拉起 `wsl.exe`，位于那一层之下。因此
+`workspace-write` 策略**约束不到它**：它能写 Linux 侧能写的任何位置，也能写 `/mnt/<盘>` 下 Windows
+允许的任何位置。
+
+这不是靠"接入沙箱"能补上的缺口。Windows 上的沙箱最终落到 **ACL / 受限令牌**，而文件操作发生在
+**Linux 内核里**：写 `/home/...` 动的是发行版自己的文件系统镜像，任何 Windows 令牌都够不着；写
+`/mnt/c/...` 要经文件系统桥，ACL 是否生效不可依赖。把 `wsl.exe` 包起来只能约束"启动器"，约束不了写入
+——而给出**虚假的隔离感，比明说不隔离更危险**。（平台自己的 `dsh-fs-sandbox` 也坦白它的边界：
+"containment, not a security boundary"。）
+
+`wsl` 实际拥有的保护是上面那套危险命令守卫：一份确定性的拒绝清单，**不是内核边界**。请把它当作
+"能碰到你的 WSL 安装能碰的一切"来授予权限。
 
 ## 从插件列表安装
 
@@ -222,7 +254,7 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 ### 测试
 
 ```sh
-npm test          # 240+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
+npm test          # 260+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

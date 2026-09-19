@@ -117,6 +117,7 @@ rather than parsed by name; the Direct3D/MSRDC/DXCore versions are omitted.
 |---|---|---|
 | `DSH_WSL_DISTRO` | (system default) | Pin the distribution for every call. |
 | `DSH_WSL_TIMEOUT_MS` | `600000` | Default deadline for a model-issued command; `timeoutMs` overrides it per call. |
+| `DSH_WSL_MAX_TIMEOUT_MS` | `86400000` | Ceiling for a per-call `timeoutMs`, mirroring the platform shell tools' `maxTimeoutMs`. The default deadline obeys it too. |
 | `DSH_WSL_WORKDIR` | `home` | Where a call starts without a `workdir`: `home` (the Linux `~`), `session` (the session working directory, i.e. `/mnt/<drive>/...` for a Windows checkout), or any explicit path. |
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | Per-stream in-memory window (1 KiB – 8 MiB). Also raises the spill ceiling when set above 64 MiB. |
 
@@ -148,13 +149,45 @@ takes effect on restart.
   ```
   [stdout truncated: at most the last 65536 of 1288895 bytes were kept; full stream: C:\...\stdout.log]
   ```
-- `timeoutMs` defaults to 10 minutes so a wedged `wsl.exe` cannot hang the call forever; pass a larger value for genuinely long work. The timeout also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
+- **Host shell facts are forwarded into the distro**, because WSL does not pass Windows environment variables across on its own: `DSH_SESSION_ID`, `DSH_SHELL` and `DSH_HOME` (translated to its `/mnt/...` view) are exported ahead of the command, so a script sees the same session facts the platform's own shell tools inject. **`DSH_WEB_URL` is deliberately not forwarded** — it is a `127.0.0.1` URL for the Windows-side server, and in the default NAT networking mode WSL cannot reach Windows loopback (measured: HTTP 000 on both `127.0.0.1` and the host IP, which the server does not bind either). An explicit `env` entry always overrides a forwarded one.
+- `timeoutMs` defaults to 10 minutes so a wedged `wsl.exe` cannot hang the call forever; pass a larger value for genuinely long work, up to the `DSH_WSL_MAX_TIMEOUT_MS` ceiling (24 h by default) — a slip of the keyboard cannot mean "never time out". The value reported back is always the deadline actually armed. The timeout also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
+- `wsl-env` also states where the session's own files live, and whether that is a Windows drive mount:
+
+  ```
+  workspace: /mnt/d/DSHworkarea (Windows drive mount /mnt/d — builds, installs and git are much slower here; prefer a path under /home when it matters)
+  ```
+
+  It is worth believing. Measured on the author's machine: a 128 MB sequential write ran at ~2.1 GB/s on ext4 against ~247 MB/s on `/mnt/d`, and creating 400 small files took under 10 ms against 0.72 s.
 - Destructive commands are refused unless the call passes `allowDangerous: true`:
   - **any recursive delete** — `rm -r`, `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive` — because with stdin on `/dev/null` nothing prompts, so `rm -r tree` deletes silently. Each `rm` invocation is judged on its own command segment, so `rm a -f; rm b -r` cannot combine into a pass;
   - `dd` onto a block device, `mkfs`, partitioning/wiping tools (`fdisk`, `parted`, `wipefs`, `mkswap`, …), power control (`shutdown`, `reboot`, `systemctl reboot`, …), redirection onto a block device, and fork bombs;
   - the guard tolerates the ways a command word can be spelled (`sudo rm -r -f`, `bash -c "rm -rf /"`, `find . -exec rm -rf {} +`, `rm$IFS-rf`, `\rm -rf`, `$(which rm) -rf`) but matches device/power tools at **command position**, so inspecting them is fine: `man fdisk`, `grep -rn reboot /var/log/syslog` and `echo "the mkfs tool formats disks"` all run.
 - Repeated launcher noise is stripped from stderr: the localhost-proxy warning and procps' `screen size is bogus` line.
 - Uses `wsl.exe -e` (`--exec`) so quoting and `$VAR` expansion behave like a normal shell; the default `--` pass-through mangles single quotes and variables.
+
+## Sandboxing
+
+DSH's file sandbox is enforced at two points: the shell executors
+(`@deepseek-ai/dsh-bash-sandbox`, `-pwsh-sandbox`, which wrap the exact argv
+through `ctx.sandbox`) and the filesystem service (`@deepseek-ai/dsh-fs-sandbox`,
+a policy fence on the two mutations). **`wsl` is in neither.** It spawns
+`wsl.exe` through the host `subprocess` service, below that layer, so a
+`workspace-write` policy does not confine it: it can write anywhere the Linux
+side can, and anywhere under `/mnt/<drive>` that Windows permits.
+
+That is not a gap this plugin can close by "joining" the sandbox. On Windows the
+sandbox resolves to an ACL / restricted-token runner, while the file work happens
+inside the Linux kernel: a write to `/home/...` touches the distro's own
+filesystem image, which no Windows token constrains, and a write to `/mnt/c/...`
+travels through the filesystem bridge, where ACL enforcement is not something to
+rely on. Wrapping `wsl.exe` would confine the launcher, not the writes — and a
+false sense of isolation is worse than a documented absence. (The platform's own
+`dsh-fs-sandbox` is candid about its own limits too: "containment, not a security
+boundary".)
+
+What `wsl` does have is the destructive-command guard described above: a
+deterministic refusal list, not a kernel boundary. Treat this tool as able to
+touch anything your WSL installation can, and grant it accordingly.
 
 ## Install from the plugin list
 
@@ -227,7 +260,7 @@ containing the `tool-wsl` row.
 ### Tests
 
 ```sh
-npm test          # 240+ checks against real WSL, with a shim standing in for ctx.subprocess
+npm test          # 260+ checks against real WSL, with a shim standing in for ctx.subprocess
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
