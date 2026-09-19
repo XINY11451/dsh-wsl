@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl",
-  "version": "1.7.2",
-  "description": "Model-facing WSL tool: execute Linux commands through wsl.exe from Windows.",
+  "version": "1.7.3",
+  "description": "Model-facing WSL tools for DeepSeek Harness: run Linux commands from Windows with background jobs, stdin, path translation, destructive-command guard and WSL capability diagnostics.",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
@@ -9,6 +9,20 @@
     "type": "git",
     "url": "git+https://github.com/XINY11451/dsh-wsl.git"
   },
+  "homepage": "https://github.com/XINY11451/dsh-wsl#readme",
+  "bugs": {
+    "url": "https://github.com/XINY11451/dsh-wsl/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "wsl",
+    "windows",
+    "linux",
+    "shell",
+    "interop"
+  ],
   "files": [
     "index.js",
     "lib",

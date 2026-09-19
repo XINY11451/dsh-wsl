@@ -1,0 +1,61 @@
+name: release
+
+# The plugin market installs this plugin from a FIXED asset URL:
+#   https://github.com/XINY11451/dsh-wsl/releases/latest/download/dsh-wsl.tgz
+# so a tagged version is only reachable to market users once a *release* exists
+# whose asset carries exactly that file name. Nothing else publishes it.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the toolchain the plugin is developed against.
+          node-version: '22'
+
+      # The behavioural suite needs Windows + WSL, so it cannot run here. These
+      # gates can: syntax, and that the module actually imports — lib/ has no
+      # dependencies outside the package, so a missing file or a broken relative
+      # import fails the release instead of shipping.
+      - name: Gate — syntax and module load
+        run: |
+          set -euo pipefail
+          node --check index.js
+          for file in lib/*.js lib/tools/*.js; do node --check "$file"; done
+          node -e "
+            import('./index.js').then((mod) => {
+              if (typeof mod.apply !== 'function') throw new Error('apply is not exported');
+              if (mod.name !== 'tool-wsl') throw new Error('unexpected plugin name: ' + mod.name);
+              console.log('plugin module loads:', Object.keys(mod).sort().join(', '));
+            });
+          "
+
+      - name: Build the tarball
+        run: |
+          set -euo pipefail
+          npm pack
+          # The market URL is fixed on `dsh-wsl.tgz`; `npm pack` names the file
+          # after the version, so rename rather than adding a second asset.
+          mv dsh-wsl-*.tgz dsh-wsl.tgz
+          tar -tzf dsh-wsl.tgz
+          ls -l dsh-wsl.tgz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dsh-wsl.tgz --clobber
+          else
+            gh release create "$tag" dsh-wsl.tgz --title "$tag" --generate-notes --latest
+          fi
