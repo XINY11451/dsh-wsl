@@ -1,6 +1,15 @@
 # This bundle layer registers the wsl tool plugin in an agent preset.
 # Presets can also add the row manually instead of relying on this patch.
 
+# The entry name is PATH-RELATIVE on purpose. DSH anchors a relative `name:` to
+# the directory of the patch file that declared it (`anchorInsertedPluginNames`),
+# so this row always loads this bundle's own `index.js` — whatever the package
+# folder happens to be called. A bare package name would instead have to match
+# the installed folder name, which couples this file to the npm package name:
+# the registry refuses `dsh-wsl` as too similar to `is-wsl`, so the published
+# name is `dsh-wsl-tool` while a local `file:` install may sit in
+# `node_modules/dsh-wsl`. Keep this relative.
+
 - insert:
     - id: tool-wsl
-      name: 'dsh-wsl'
+      name: './index.js'

@@ -13,10 +13,10 @@
 // behind a hand-written imitation.
 
 import { spawn } from 'node:child_process'
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { apply } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
@@ -896,6 +896,33 @@ async function toolTests(tools, shim) {
     check(`${name}: catalog cost within budget`, cost <= 2_500, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
   check('total catalog cost within budget', catalog <= 3_800, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+
+  // The bundle patch must load this package's own entry without depending on the
+  // folder it was installed into. npm refuses the repository name (`dsh-wsl` is
+  // too similar to the existing package `is-wsl`), so the published name is
+  // `dsh-wsl-tool` while a local `file:` dependency may still sit in
+  // `node_modules/dsh-wsl`. A bare name here would only resolve in one of those
+  // layouts, and DSH anchors a relative `name:` beside the patch file itself.
+  console.log('\nbundle manifest and patch entry')
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
+  const patchRel = manifest.dsh?.bundle?.patch
+  check('package.json declares a bundle patch', typeof patchRel === 'string', String(patchRel))
+  const patchFile = resolve(packageRoot, patchRel ?? '')
+  check('the declared patch file exists', patchRel !== undefined && existsSync(patchFile), patchFile)
+  const patchText = readFileSync(patchFile, 'utf8')
+  check('the patch inserts exactly one row', (patchText.match(/^\s*- id:/gm) ?? []).length === 1)
+  const entryName = /^\s*name:\s*'([^']+)'\s*$/m.exec(patchText)?.[1]
+  check(
+    'the patch entry name is folder-independent',
+    typeof entryName === 'string' && entryName.startsWith('./'),
+    `${entryName} — a bare package name would couple this file to the install folder`,
+  )
+  check(
+    'the patch entry resolves to a real file',
+    typeof entryName === 'string' && entryName.startsWith('./') && existsSync(resolve(dirname(patchFile), entryName)),
+    String(entryName),
+  )
 }
 
 // --- main ------------------------------------------------------------------

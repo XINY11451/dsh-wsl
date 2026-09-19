@@ -79,20 +79,32 @@ rather than parsed by name; the Direct3D/MSRDC/DXCore versions are omitted.
 
 ## Install
 
+The published npm package is **`dsh-wsl-tool`**, not `dsh-wsl`: the registry
+refuses `dsh-wsl` as too similar to the existing package `is-wsl`, and no token
+or setting overrides that. The repository, the plugin and the market listing keep
+the `dsh-wsl` name. The bundle patch points at its own entry by relative path, so
+the folder under `node_modules` is free to differ — what has to match is the
+specifier you install under.
+
 1. Add the package to your DSH profile (`profiles/<profile>/package.json`):
 
    ```json
-   { "dependencies": { "dsh-wsl": "file:<path-to-this-repo>" } }
+   { "dependencies": { "dsh-wsl-tool": "file:<path-to-this-repo>" } }
    ```
 
-   or run `dsh plugin add --profile <profile> file:<path-to-this-repo>`.
+   or run `dsh plugin add --profile <profile> dsh-wsl-tool` to install from npm,
+   or `dsh plugin add --profile <profile> file:<path-to-this-repo>` from a
+   checkout (which names the dependency after this package).
 
 2. Add a `tool-wsl` row to an agent preset's `agent.cordis.yml`:
 
    ```yaml
    - id: tool-wsl
-     name: 'dsh-wsl'
+     name: 'dsh-wsl-tool'
    ```
+
+   `name` is the installed package name — use your own dependency key if you
+   installed under a different one.
 
 3. Restart DSH.
 
@@ -192,9 +204,10 @@ touch anything your WSL installation can, and grant it accordingly.
 ## Install from the plugin list
 
 The package declares a `dsh.bundle` manifest (see `package.json`), so once the
-repository is listed it can be installed by name, e.g. `dsh plugin add dsh-wsl`,
-and storefronts will offer it for one-click install. Installing from a local
-path (`file:`) as shown above keeps working either way.
+repository is listed it can be installed by name, e.g.
+`dsh plugin add dsh-wsl-tool`, and storefronts will offer it for one-click
+install. Installing from a local path (`file:`) as shown above keeps working
+either way.
 
 ## How it works
 
@@ -251,7 +264,7 @@ The plugin is plain ESM with no build step or runtime dependencies outside the
 DSH host plane. Iterate by pointing a profile dependency at the checkout:
 
 ```json
-{ "dependencies": { "dsh-wsl": "file:/path/to/dsh-wsl" } }
+{ "dependencies": { "dsh-wsl-tool": "file:/path/to/dsh-wsl" } }
 ```
 
 then restart DSH and exercise the tools from a session that uses a preset
@@ -290,8 +303,12 @@ DSH loads. After any change:
 
 ```sh
 npm run sync                  # copies into ~/.dsh/profiles/web/node_modules/dsh-wsl
-npm run sync -- /path/to/profiles/<profile>/node_modules/dsh-wsl
+npm run sync -- /path/to/profiles/<profile>/node_modules/<your-key>
 ```
+
+The target must be the folder your profile's dependency key created (the default
+above is this checkout's own key); the plugin loads its entry by relative path, so
+the folder name itself never matters.
 
 then restart DSH — the plugin is imported once at load.
 

@@ -6,8 +6,11 @@ name: release
 # whose asset carries exactly that file name. Nothing else publishes it.
 #
 # A tag also publishes to npm, which is what makes the catalog show a version and
-# download count. That step is skipped until the NPM_TOKEN secret exists, so this
-# workflow is safe to run before the npm account is set up.
+# download count. The published name is `dsh-wsl-tool`, NOT the repository name:
+# the registry rejects `dsh-wsl` as too similar to the existing package `is-wsl`,
+# and no token can override that. `package.json` owns the name; this workflow only
+# has to avoid assuming it. That step is skipped until the NPM_TOKEN secret
+# exists, so this workflow is safe to run before the npm account is set up.
 on:
   push:
     tags: ['v*']
@@ -19,8 +22,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           # Matches the toolchain the plugin is developed against.
           node-version: '22'
@@ -48,13 +51,17 @@ jobs:
       - name: Build the tarball
         run: |
           set -euo pipefail
-          npm pack
-          # The market URL is fixed on `dsh-wsl.tgz`; `npm pack` names the file
-          # after the version, so keep a copy under that name for the release
-          # asset and publish the version-named one to npm.
-          cp dsh-wsl-*.tgz dsh-wsl.tgz
+          # `npm pack` names the file after the package name and version, which is
+          # deliberately not the repository name, so ask for the name instead of
+          # guessing it, and hand it to the publish step through GITHUB_ENV.
+          tarball="$(npm pack --silent | tail -n 1)"
+          test -f "$tarball"
+          # The market URL is fixed on `dsh-wsl.tgz`, so keep a copy under exactly
+          # that name for the release asset and publish the version-named one.
+          cp "$tarball" dsh-wsl.tgz
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
           tar -tzf dsh-wsl.tgz
-          ls -l dsh-wsl.tgz dsh-wsl-*.tgz
+          ls -l dsh-wsl.tgz "$tarball"
 
       # The market asset is the critical path — it is what the catalog installs
       # from — so it goes FIRST. A publishing failure below then fails the run
@@ -100,7 +107,7 @@ jobs:
           echo "authenticated as: ${who}"
           echo "::notice::npm token authenticates as ${who}"
 
-          if ! output="$(npm publish ./dsh-wsl-*.tgz 2>&1)"; then
+          if ! output="$(npm publish "./${TARBALL}" 2>&1)"; then
             echo "$output"
             # The first `npm error` line is only the code; the sentence that says
             # WHY is on the following one, so keep a few.

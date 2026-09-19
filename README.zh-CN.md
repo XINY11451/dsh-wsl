@@ -71,20 +71,29 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 
 ## 安装
 
+发布到 npm 的包名是 **`dsh-wsl-tool`**，不是 `dsh-wsl`：registry 判定 `dsh-wsl` 与既有包
+`is-wsl` 过于相似而拒绝，换 token 或改设置都无法绕过。仓库名、插件名与市场条目仍沿用
+`dsh-wsl`。组合包的 patch 用相对路径指向自身入口，因此 `node_modules` 下的文件夹名可以
+不同——必须一致的是你安装时使用的那个名字。
+
 1. 将本包加入 DSH 的 profile（`profiles/<profile>/package.json`）：
 
    ```json
-   { "dependencies": { "dsh-wsl": "file:<path-to-this-repo>" } }
+   { "dependencies": { "dsh-wsl-tool": "file:<path-to-this-repo>" } }
    ```
 
-   或运行 `dsh plugin add --profile <profile> file:<path-to-this-repo>`。
+   或运行 `dsh plugin add --profile <profile> dsh-wsl-tool` 从 npm 安装，或用
+   `dsh plugin add --profile <profile> file:<path-to-this-repo>` 从本地检出安装
+   （依赖名会取本包自身的名字）。
 
 2. 在某个 agent preset 的 `agent.cordis.yml` 中加入 `tool-wsl` 行：
 
    ```yaml
    - id: tool-wsl
-     name: 'dsh-wsl'
+     name: 'dsh-wsl-tool'
    ```
+
+   `name` 即安装后的包名；若你用了别的依赖名，就填那个名字。
 
 3. 重启 DSH。
 
@@ -202,7 +211,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ## 从插件列表安装
 
 本包声明了 `dsh.bundle` manifest（见 `package.json`），因此仓库被列表收录后可按
-名称安装，例如 `dsh plugin add dsh-wsl`，市场（storefront）也会提供一键安装。
+名称安装，例如 `dsh plugin add dsh-wsl-tool`，市场（storefront）也会提供一键安装。
 上文 `file:` 的本地安装方式仍然有效。
 
 ## 工作原理
@@ -248,7 +257,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 依赖指向本仓库：
 
 ```json
-{ "dependencies": { "dsh-wsl": "file:/path/to/dsh-wsl" } }
+{ "dependencies": { "dsh-wsl-tool": "file:/path/to/dsh-wsl" } }
 ```
 
 然后重启 DSH，在包含 `tool-wsl` 行的 preset 会话中调用工具验证。
@@ -282,8 +291,11 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 
 ```sh
 npm run sync                  # 复制到 ~/.dsh/profiles/web/node_modules/dsh-wsl
-npm run sync -- /path/to/profiles/<profile>/node_modules/dsh-wsl
+npm run sync -- /path/to/profiles/<profile>/node_modules/<你的依赖名>
 ```
+
+目标目录必须是 profile 依赖名对应的文件夹（上面的默认值就是本检出的依赖名）；
+插件按相对路径加载自身入口，因此文件夹叫什么并不影响加载。
 
 然后重启 DSH——插件在加载时只导入一次。
 

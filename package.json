@@ -1,6 +1,6 @@
 {
-  "name": "dsh-wsl",
-  "version": "1.7.7",
+  "name": "dsh-wsl-tool",
+  "version": "1.8.0",
   "description": "Model-facing WSL tools for DeepSeek Harness: run Linux commands from Windows with background jobs, stdin, path translation, destructive-command guard and WSL capability diagnostics.",
   "type": "module",
   "main": "index.js",
