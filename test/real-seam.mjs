@@ -99,7 +99,7 @@ try {
 
     const snapshot = jobs.get(started.jobId)
     check('the real registry knows the job', snapshot?.kind === 'wsl', String(snapshot?.kind))
-    check('the real registry carries the label', /^wsl: /.test(snapshot?.label ?? ''), String(snapshot?.label))
+    check('the real registry carries the label', (snapshot?.label ?? '').startsWith('echo real-job-output'), String(snapshot?.label))
 
     const final = await jobs.wait(started.jobId, 30_000)
     check('the job completes in the real registry', final?.status === 'completed', String(final?.status))

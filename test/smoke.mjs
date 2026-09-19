@@ -649,7 +649,21 @@ async function toolTests(tools, shim) {
   eq('the job completed', settled.outcome.status, 'completed')
   check('the job detail carries the exit code', /exit code 0/.test(settled.outcome.detail ?? ''), String(settled.outcome.detail))
   check('the job output holds the command output', (settled.outcome.output ?? '').includes('from-the-job'), JSON.stringify(settled.outcome.output))
-  check('the job label names the tool', settled.spec.label.startsWith('wsl: echo from-the-job'), settled.spec.label)
+  // The label is the bare command: the runtime already frames it with the job id
+  // and the `wsl` kind, so a prefix here would read "wsl-1 [wsl] — wsl: …".
+  eq('the job label is the command, unprefixed', settled.spec.label, 'echo from-the-job')
+  const multilineLabel = await tools.wsl.execute({
+    command: '\n\n  echo skipped-blank-lines\n', description: 'label from a later line', runInBackground: true,
+  })
+  eq('a blank first line still yields a usable label',
+    jobs.record(multilineLabel.jobId).spec.label, 'echo skipped-blank-lines')
+  await jobs.settled(multilineLabel.jobId)
+  const longLabel = await tools.wsl.execute({
+    command: `echo ${'y'.repeat(200)}`, description: 'long label', runInBackground: true,
+  })
+  const longLabelText = jobs.record(longLabel.jobId).spec.label
+  check('a long label is truncated', longLabelText.length === 120 && longLabelText.endsWith('…'), String(longLabelText.length))
+  await jobs.settled(longLabel.jobId)
 
   const failingJob = await tools.wsl.execute({
     command: 'echo bad; exit 3', description: 'background failure', runInBackground: true,
@@ -671,6 +685,10 @@ async function toolTests(tools, shim) {
   const cancelled = await jobs.settled(longJob.jobId)
   eq('a cancelled job reports killed', cancelled.outcome.status, 'killed')
   check('the cancel reason survives', /test reason/.test(cancelled.outcome.detail ?? ''), String(cancelled.outcome.detail))
+  // The status line says `killed`; an exit code left in the body would be the
+  // kill's own artifact and would contradict it.
+  check('a cancelled job does not also report an exit code',
+    !/\[exit code:/.test(cancelled.outcome.output ?? ''), JSON.stringify(cancelled.outcome.output))
 
   const timedJob = await tools.wsl.execute({
     command: 'sleep 5', description: 'background timeout', runInBackground: true, timeoutMs: 700,
