@@ -75,15 +75,36 @@ jobs:
       # read-only mirror by a developer's local .npmrc. Publishing needs a token
       # that may bypass 2FA: an interactive login cannot answer an OTP prompt
       # from an unattended run (npm answers 403 in that case).
+      #
+      # Failures here are reported through `::error::`, which GitHub records as a
+      # check annotation — readable from the public API without repository
+      # access, unlike the job log. That is deliberate: this step is the only
+      # part of the pipeline that needs a credential, so when it breaks the
+      # reason has to be legible without asking a human to copy it out.
       - name: Publish to npm (skipped until NPM_TOKEN exists)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN is not configured — skipping the npm publish."
-            echo "Add an npm granular access token (read+write on all packages, with"
-            echo "2FA bypass) as the NPM_TOKEN repository secret to enable publishing."
+            echo "::notice::NPM_TOKEN is not set; the npm publish was skipped."
             exit 0
           fi
-          npm publish ./dsh-wsl-*.tgz
+
+          echo "registry: $(npm config get registry)"
+          if ! who="$(npm whoami 2>&1)"; then
+            echo "::error::npm whoami rejected the token: $(echo "$who" | head -c 300)"
+            exit 1
+          fi
+          echo "authenticated as: ${who}"
+          echo "::notice::npm token authenticates as ${who}"
+
+          if ! output="$(npm publish ./dsh-wsl-*.tgz 2>&1)"; then
+            echo "$output"
+            reason="$(echo "$output" | grep -m1 'npm error' | tr -d '\r' | head -c 300)"
+            echo "::error::npm publish failed: ${reason:-see the log}"
+            exit 1
+          fi
+          echo "$output"
+          echo "::notice::published $(node -p "require('./package.json').version") to npm"
