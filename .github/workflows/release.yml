@@ -56,21 +56,9 @@ jobs:
           tar -tzf dsh-wsl.tgz
           ls -l dsh-wsl.tgz dsh-wsl-*.tgz
 
-      # `package.json` pins `publishConfig.registry`, so this cannot be sent to a
-      # read-only mirror by a developer's local .npmrc.
-      - name: Publish to npm (skipped until NPM_TOKEN exists)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN is not configured — skipping the npm publish."
-            echo "Add an npm granular access token (read+write, 2FA bypass) as the"
-            echo "NPM_TOKEN repository secret to enable publishing."
-            exit 0
-          fi
-          npm publish ./dsh-wsl-*.tgz
-
+      # The market asset is the critical path — it is what the catalog installs
+      # from — so it goes FIRST. A publishing failure below then fails the run
+      # loudly without withholding the release.
       - name: Publish the GitHub release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,3 +70,20 @@ jobs:
           else
             gh release create "$tag" dsh-wsl.tgz --title "$tag" --generate-notes --latest
           fi
+
+      # `package.json` pins `publishConfig.registry`, so this cannot be sent to a
+      # read-only mirror by a developer's local .npmrc. Publishing needs a token
+      # that may bypass 2FA: an interactive login cannot answer an OTP prompt
+      # from an unattended run (npm answers 403 in that case).
+      - name: Publish to npm (skipped until NPM_TOKEN exists)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not configured — skipping the npm publish."
+            echo "Add an npm granular access token (read+write on all packages, with"
+            echo "2FA bypass) as the NPM_TOKEN repository secret to enable publishing."
+            exit 0
+          fi
+          npm publish ./dsh-wsl-*.tgz
