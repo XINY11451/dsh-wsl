@@ -102,7 +102,9 @@ jobs:
 
           if ! output="$(npm publish ./dsh-wsl-*.tgz 2>&1)"; then
             echo "$output"
-            reason="$(echo "$output" | grep -m1 'npm error' | tr -d '\r' | head -c 300)"
+            # The first `npm error` line is only the code; the sentence that says
+            # WHY is on the following one, so keep a few.
+            reason="$(echo "$output" | grep 'npm error' | head -3 | tr -d '\r' | tr '\n' ' ' | head -c 300)"
             echo "::error::npm publish failed: ${reason:-see the log}"
             exit 1
           fi
