@@ -299,6 +299,8 @@ npm run sync -- /path/to/profiles/<profile>/node_modules/<你的依赖名>
 
 然后重启 DSH——插件在加载时只导入一次。
 
+发版流程（tag 触发的流水线、npm 包名与目录条目）见 [`PUBLISHING.md`](PUBLISHING.md)。
+
 ## 收录
 
 本仓库带有 `dsh-plugin` topic，并已提交至 awesome-dsh-plugin 社区列表的 `wsl` 分类。

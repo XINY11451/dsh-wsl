@@ -312,6 +312,9 @@ the folder name itself never matters.
 
 then restart DSH — the plugin is imported once at load.
 
+Releasing — the tag-triggered workflow, the npm name, and the catalog entry — is
+documented in [`PUBLISHING.md`](PUBLISHING.md).
+
 ## Listing
 
 The repository carries the `dsh-plugin` topic and is listed under the `wsl`
