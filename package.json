@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "description": "Model-facing WSL tools for DeepSeek Harness: run Linux commands from Windows with background jobs, stdin, path translation, destructive-command guard and WSL capability diagnostics.",
   "type": "module",
   "main": "index.js",
@@ -37,6 +37,10 @@
     "test": "node test/smoke.mjs",
     "test:real": "node test/smoke.mjs --real && node test/real-seam.mjs",
     "sync": "node scripts/sync-profile.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dsh": {
     "bundle": {

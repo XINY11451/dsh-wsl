@@ -4,6 +4,10 @@ name: release
 #   https://github.com/XINY11451/dsh-wsl/releases/latest/download/dsh-wsl.tgz
 # so a tagged version is only reachable to market users once a *release* exists
 # whose asset carries exactly that file name. Nothing else publishes it.
+#
+# A tag also publishes to npm, which is what makes the catalog show a version and
+# download count. That step is skipped until the NPM_TOKEN secret exists, so this
+# workflow is safe to run before the npm account is set up.
 on:
   push:
     tags: ['v*']
@@ -20,6 +24,9 @@ jobs:
         with:
           # Matches the toolchain the plugin is developed against.
           node-version: '22'
+          # Writes the registry and the token placeholder into the runner's
+          # .npmrc, so `npm publish` authenticates from NODE_AUTH_TOKEN.
+          registry-url: 'https://registry.npmjs.org'
 
       # The behavioural suite needs Windows + WSL, so it cannot run here. These
       # gates can: syntax, and that the module actually imports — lib/ has no
@@ -43,12 +50,28 @@ jobs:
           set -euo pipefail
           npm pack
           # The market URL is fixed on `dsh-wsl.tgz`; `npm pack` names the file
-          # after the version, so rename rather than adding a second asset.
-          mv dsh-wsl-*.tgz dsh-wsl.tgz
+          # after the version, so keep a copy under that name for the release
+          # asset and publish the version-named one to npm.
+          cp dsh-wsl-*.tgz dsh-wsl.tgz
           tar -tzf dsh-wsl.tgz
-          ls -l dsh-wsl.tgz
+          ls -l dsh-wsl.tgz dsh-wsl-*.tgz
 
-      - name: Publish the release
+      # `package.json` pins `publishConfig.registry`, so this cannot be sent to a
+      # read-only mirror by a developer's local .npmrc.
+      - name: Publish to npm (skipped until NPM_TOKEN exists)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not configured — skipping the npm publish."
+            echo "Add an npm granular access token (read+write, 2FA bypass) as the"
+            echo "NPM_TOKEN repository secret to enable publishing."
+            exit 0
+          fi
+          npm publish ./dsh-wsl-*.tgz
+
+      - name: Publish the GitHub release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
