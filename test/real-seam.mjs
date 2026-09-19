@@ -48,6 +48,78 @@ try {
   check('the plugin registers in the real DSH ToolRuntime', false, error.message)
 }
 
+// A background command must land in the REAL job registry, because the whole
+// point is that the model drives it with the `job_output`/`job_kill` tools it
+// already has. A fake registry cannot show that, and the registry refuses to
+// serve an owner until `tool-jobs` attaches its controller — so this composes
+// that controller for real rather than stubbing the check away.
+{
+  const { default: LocalJobRegistry } = await load('@deepseek-ai/dsh-jobs-local/lib/index.js')
+  const jobsModule = await load('@deepseek-ai/dsh-tool-jobs/lib/index.js')
+
+  const jobsCtx = new Context()
+  // Only what those two plugins touch on a bare context: the model-facing tool
+  // registry (which this test ignores) and the prompt-section registrar.
+  jobsCtx.provide?.('tools', { register() {} })
+  jobsCtx.provide?.('systemPrompt', { tools() {}, section() { return () => {} } })
+  const jobs = new LocalJobRegistry(jobsCtx, {})
+  // `tool-jobs` attaches the controller the registry demands and THEN wires
+  // prompt sections, which need more of the real composition than a bare
+  // context has. The controller attaches first, so a stub failure after that
+  // point is not this plugin's concern — and that it attached is proven below,
+  // because the registry refuses to serve an owner without one.
+  try {
+    jobsModule.apply(jobsCtx, { waitTimeoutMs: 30_000 })
+  } catch {
+    // Prompt-section wiring needs the full host composition; deliberately ignored.
+  }
+
+  // Control: the same call on a registry with NO controller must be refused,
+  // which is what makes the successful start below meaningful rather than vacuous.
+  try {
+    new LocalJobRegistry(new Context(), {}).start({
+      kind: 'wsl', label: 'control', run: () => ({ cancel() {}, done: Promise.resolve({ status: 'completed' }) }),
+    })
+    check('the registry refuses a job with no controller (control)', false, 'it was accepted')
+  } catch (error) {
+    check('the registry refuses a job with no controller (control)', /no job controller/.test(error.message))
+  }
+
+  const toolSet = {}
+  apply({
+    tools: { register: (tool) => { toolSet[tool.name] = tool } },
+    subprocess: runtime,
+    get: (name) => (name === 'jobs' ? jobs : undefined),
+  })
+  try {
+    const started = await toolSet.wsl.execute({
+      command: 'echo real-job-output', description: 'real background job', runInBackground: true,
+    })
+    check('a background start returns a wsl-<n> job id', /^wsl-\d+$/.test(started.jobId ?? ''), String(started.jobId))
+
+    const snapshot = jobs.get(started.jobId)
+    check('the real registry knows the job', snapshot?.kind === 'wsl', String(snapshot?.kind))
+    check('the real registry carries the label', /^wsl: /.test(snapshot?.label ?? ''), String(snapshot?.label))
+
+    const final = await jobs.wait(started.jobId, 30_000)
+    check('the job completes in the real registry', final?.status === 'completed', String(final?.status))
+    check('the real registry carries the exit detail', /exit code 0/.test(final?.detail ?? ''), String(final?.detail))
+    const read = jobs.read(started.jobId)
+    check('the real registry returns the job output',
+      JSON.stringify(read ?? '').includes('real-job-output'), JSON.stringify(read).slice(0, 160))
+
+    // Cancel through the registry, exactly as `job_kill` would.
+    const longOne = await toolSet.wsl.execute({
+      command: 'sleep 60', description: 'real background cancel', runInBackground: true,
+    })
+    jobs.kill(longOne.jobId, undefined, 'test cancel')
+    const killed = await jobs.wait(longOne.jobId, 30_000)
+    check('a registry kill stops the job', killed?.status === 'killed', String(killed?.status))
+  } catch (error) {
+    check('background jobs work in the real registry', false, error.message)
+  }
+}
+
 // ToolRuntime.register() asserts output.schema at PLUGIN LOAD time, so a schema
 // outside DSH's supported subset would break registration on the next restart
 // rather than fail a call. The parameters schema is projected into the model's

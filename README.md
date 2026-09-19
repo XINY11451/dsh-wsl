@@ -30,8 +30,16 @@ entirely so `wsl.exe` uses the **system default distribution** — that is what 
 the package portable to a machine that has no `Ubuntu-22.04`.
 
 A script longer than the Windows command-line limit (32767 characters) is fed to
-`wsl.exe -d <distro> -e bash -ls` on **stdin** instead, so long commands work
+`wsl.exe [-d <distro>] -e bash -ls` on **stdin** instead, so long commands work
 without any size ceiling.
+
+Pass `stdin` to write text into the command (the default is `/dev/null`, so an
+interactive command gets EOF), and `runInBackground: true` for work that outlives
+the call: the command becomes a job in the host's registry, which the model then
+reads with the **`job_output`** tool and stops with **`job_kill`** — no extra tool
+is involved. Background jobs need `@deepseek-ai/dsh-tool-jobs` in the preset's
+composition; without it the call fails with that instruction instead of silently
+running in the foreground.
 
 ### `wsl-path`
 
@@ -75,6 +83,8 @@ unknown distro is an error rather than a partial answer.
 | `timeoutMs` | no | number | timeout in milliseconds, default 600000 (10 min); the process is killed and the result marked as timed out |
 | `distro` | no | string | WSL distribution; defaults to the system default distribution |
 | `env` | no | object | extra environment variables to export (keys must be valid shell names) |
+| `stdin` | no | string | text written to the command stdin (UTF-8) before it runs |
+| `runInBackground` | no | boolean | run as a job and return its id immediately; read with `job_output`, stop with `job_kill` |
 | `allowDangerous` | no | boolean | set `true` to run destructive commands |
 | `translatePaths` | no | boolean | default `true`; set `false` to pass `command` through verbatim |
 
@@ -84,6 +94,7 @@ unknown distro is an error rather than a partial answer.
 |---|---|---|
 | `DSH_WSL_DISTRO` | (system default) | Pin the distribution for every call. |
 | `DSH_WSL_TIMEOUT_MS` | `600000` | Default deadline for a model-issued command; `timeoutMs` overrides it per call. |
+| `DSH_WSL_WORKDIR` | `home` | Where a call starts without a `workdir`: `home` (the Linux `~`), `session` (the session working directory, i.e. `/mnt/<drive>/...` for a Windows checkout), or any explicit path. |
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | Per-stream in-memory window (1 KiB – 8 MiB). Also raises the spill ceiling when set above 64 MiB. |
 
 An unparsable or out-of-range value falls back to the default: one bad variable
@@ -93,12 +104,16 @@ takes effect on restart.
 ## Notes
 
 - Each call runs in a fresh shell — no cwd/variables/functions persist between calls.
-- **stdin is `/dev/null`.** An interactive command (`read`, `cat`, a `sudo`
-  password prompt without `-S`) therefore gets EOF immediately and cannot wait
-  for input. Nothing in this plugin can prompt.
+- **stdin is `/dev/null` unless you pass `stdin`.** An interactive command (`read`,
+  `cat`, a `sudo` password prompt without `-S`) otherwise gets EOF immediately and
+  cannot wait for input; nothing in this plugin can prompt. A password passed via
+  `stdin` is recorded in the session transcript.
+- The default `workdir` is `~`; set `DSH_WSL_WORKDIR=session` to start in the
+  session's working directory instead (see Configuration).
 - The distro is the caller's `distro`, else `DSH_WSL_DISTRO`, else the system
   default; there is no hardcoded fallback name.
 - An unknown distro is reported as a clear error (`distribution "X" is not registered`) instead of a raw `-1` exit code, and any other launcher failure (`Wsl/Service/WSL_E_*`) is surfaced with its code rather than passed off as the command's own exit status.
+- **A background job outlives the call.** `runInBackground: true` returns a job id (`wsl-N`) immediately and registers the work with the host's job registry, so `job_output` reads it (with the same markers as a foreground call) and `job_kill` stops it. The 10-minute default deadline does **not** apply in the background; an explicit `timeoutMs` still does. A non-zero exit is reported as `completed` with the exit code in the detail, exactly like the foreground rendering.
 - Windows paths in `command` and `workdir` are translated to `/mnt/...` automatically:
   - `C:\Users\me\a.txt` -> `/mnt/c/Users/me/a.txt`, and paths containing spaces work in either slash style and with several paths on one line: `C:\Program Files\Git`, `C:/Program Files/Git`, `C:\Program Files (x86)\Steam` and `cp C:\a.txt D:\b.txt` (both paths are translated) all behave;
   - `\\wsl.localhost\<distro>\home\x` and `\\wsl$\<distro>\home\x` -> `/home/x`;
@@ -154,11 +169,18 @@ is split by concern:
   the command is built.
 - Output is returned as `{ exitCode, signal, timedOut, timeoutMs, truncated,
   stdout, stderr, stdoutTotalBytes, stdoutDroppedBytes, stderrTotalBytes,
-  stderrDroppedBytes, stdoutSpillPath, stderrSpillPath }`; the `render` hook
+  stderrDroppedBytes, stdoutSpillPath, stderrSpillPath, jobId }`; the `render` hook
   formats it into text with the markers listed above. The truncation marker
   quotes the window size rather than a count derived from the decoded text,
   which can be off by a byte or two when the window starts inside a multi-byte
   character.
+- `jobId` is set only by a background start; every other path returns `null`, so
+  the declared shape holds for both.
+- Launching and settling are separate steps (`runner.launch` / `settle`) because
+  a background job has to hand the registry a synchronous `cancel`/`done` pair
+  while a foreground call simply awaits the same settle. A cancelled job maps the
+  provider's early-termination rejection onto `killed`, since `JobHooks.done`
+  must never reject.
 - A destructive-command guard splits the command into `;`/`&`/`|`/newline
   segments, judges each `rm` invocation on its own flags, and matches the
   device/power tools at command position before dispatch.
@@ -181,7 +203,7 @@ containing the `tool-wsl` row.
 ### Tests
 
 ```sh
-npm test          # 180+ checks against real WSL, with a shim standing in for ctx.subprocess
+npm test          # 210+ checks against real WSL, with a shim standing in for ctx.subprocess
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

@@ -30,7 +30,10 @@ export function apply(ctx) {
   // (i.e. a DSH restart), not something a running session re-reads.
   const config = resolveConfig()
   const runner = createRunner(ctx, config)
-  ctx.tools.register(createWslTool({ config, runner }))
+  // `ctx` is passed for the optional `jobs` service only (background commands);
+  // it is read with ctx.get at call time, never injected, so a preset without
+  // tool-jobs still mounts this plugin.
+  ctx.tools.register(createWslTool({ ctx, config, runner }))
   ctx.tools.register(createWslPathTool({ config, runner }))
   ctx.tools.register(createWslEnvTool({ config, runner }))
 }

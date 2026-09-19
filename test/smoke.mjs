@@ -176,14 +176,18 @@ function makeShim(spillDir) {
         void error
       })
 
-      if (spec.signal) {
-        spec.signal.addEventListener('abort', () => {
-          child.kill('SIGTERM')
-          setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, spec.graceMs).unref?.()
-        }, { once: true })
+      // The seam's own termination ladder (the real provider stages TERM then
+      // KILL; background jobs call this through JobHooks.cancel).
+      const terminate = () => {
+        try { child.kill('SIGTERM') } catch {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, spec.graceMs).unref?.()
       }
 
-      return { done, collected: { stdout, stderr } }
+      if (spec.signal) {
+        spec.signal.addEventListener('abort', terminate, { once: true })
+      }
+
+      return { done, terminate, collected: { stdout, stderr } }
     },
   }
 }
@@ -209,11 +213,37 @@ async function makeRealBackend(modulesRoot) {
   }
 }
 
-function makeCtx(shim) {
+/** A stand-in for the host's `ctx.jobs` registry (`start(spec)` -> JobHooks). */
+function makeJobs() {
+  const records = new Map()
+  let counter = 0
+  return {
+    starts: 0,
+    start(spec) {
+      this.starts += 1
+      const id = `${spec.kind}-${++counter}`
+      const hooks = spec.run()
+      const record = { id, spec, hooks, outcome: null }
+      records.set(id, record)
+      return id
+    },
+    record(id) { return records.get(id) },
+    /** Await the producer's `done`, like the runtime's own bookkeeping. */
+    async settled(id) {
+      const record = records.get(id)
+      record.outcome = await record.hooks.done
+      return record
+    },
+  }
+}
+
+function makeCtx(shim, { jobs } = {}) {
   const tools = {}
   const ctx = {
     tools: { register(tool) { tools[tool.name] = tool } },
     subprocess: shim,
+    // Optional service: the plugin must also work when this returns undefined.
+    get: (name) => (name === 'jobs' ? jobs : undefined),
   }
   apply(ctx)
   return tools
@@ -354,6 +384,11 @@ async function unitTests() {
   eq('environment overrides the window', resolveConfig({ DSH_WSL_MAX_OUTPUT_BYTES: '4096' }).maxOutputBytes, 4_096)
   eq('DSH_WSL_DISTRO pins a distro', resolveConfig({ DSH_WSL_DISTRO: ' Debian ' }).distro, 'Debian')
   eq('a blank DSH_WSL_DISTRO means the system default', resolveConfig({ DSH_WSL_DISTRO: '   ' }).distro, null)
+  eq('the default workdir is the Linux home', resolveConfig({}).defaultWorkdir, '~')
+  eq('workdir "home" spells the tilde', resolveConfig({ DSH_WSL_WORKDIR: 'home' }).defaultWorkdir, '~')
+  eq('workdir "session" means the process cwd', resolveConfig({ DSH_WSL_WORKDIR: 'session' }).defaultWorkdir, null)
+  eq('any other workdir is an explicit default path',
+    resolveConfig({ DSH_WSL_WORKDIR: 'D:\\proj' }).defaultWorkdir, 'D:\\proj')
   // A typo must not take the tools down, and must not yield an absurd value.
   eq('unparsable timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: 'soon' }).commandTimeoutMs, 600_000)
   eq('zero timeout falls back', resolveConfig({ DSH_WSL_TIMEOUT_MS: '0' }).commandTimeoutMs, 600_000)
@@ -522,6 +557,97 @@ async function toolTests(tools, shim) {
   const plainCard = tools.wsl.presentCall({ command: 'pwd', description: 'x' })
   check('no workdir means no cwd on the card', !('cwd' in plainCard))
 
+  console.log('\nwsl: stdin')
+  const fed = await tools.wsl.execute({ command: 'cat', description: 'feed stdin', stdin: 'line one\nline two\n' })
+  eq('stdin reaches the command', fed.stdout, 'line one\nline two\n')
+  const counted = await tools.wsl.execute({ command: 'wc -c', description: 'count stdin', stdin: '12345' })
+  eq('the exact bytes arrive', counted.stdout.trim(), '5')
+  const emptyStdin = await tools.wsl.execute({ command: 'wc -c', description: 'no stdin', stdin: '' })
+  eq('an empty stdin is still a pipe that closes', emptyStdin.stdout.trim(), '0')
+  await rejects('stdin must be a string', () => tools.wsl.execute({
+    command: 'cat', description: 'bad stdin', stdin: 42,
+  }), /stdin must be a string/)
+  await rejects('a command over the argv limit cannot also take stdin', () => tools.wsl.execute({
+    command: `echo ${'x'.repeat(31_000)}`, description: 'both', stdin: 'data',
+  }), /cannot also carry `stdin`/)
+
+  console.log('\nwsl: DSH_WSL_WORKDIR=session')
+  const previousWorkdir = process.env.DSH_WSL_WORKDIR
+  process.env.DSH_WSL_WORKDIR = 'session'
+  try {
+    // `apply()` reads the environment at mount, which is exactly what a restart
+    // does, so a second mount is how a deployment switches this on.
+    const sessionTools = makeCtx(shim, { jobs })
+    const sessionPwd = await sessionTools.wsl.execute({ command: 'pwd', description: 'session cwd' })
+    eq('the default workdir follows the session cwd', sessionPwd.stdout.trim(), windowsPathToWsl(process.cwd()))
+    const overridden = await sessionTools.wsl.execute({ command: 'pwd', description: 'explicit wins', workdir: '~/.' })
+    eq('an explicit workdir still wins', overridden.stdout.trim(), '/home/xiny')
+  } finally {
+    if (previousWorkdir === undefined) delete process.env.DSH_WSL_WORKDIR
+    else process.env.DSH_WSL_WORKDIR = previousWorkdir
+  }
+
+  console.log('\nwsl: background jobs')
+  const started = await tools.wsl.execute({
+    command: 'echo from-the-job', description: 'background echo', runInBackground: true,
+  })
+  check('a job id comes back', /^wsl-\d+$/.test(started.jobId ?? ''), String(started.jobId))
+  check('the background result carries no exit code', started.exitCode === null)
+  check('no default deadline applies in the background', started.timeoutMs === null)
+  check('the render points at the job tools',
+    render(started) === `[started in the background as job ${started.jobId}; read it with job_output, stop it with job_kill]`, render(started))
+  const settled = await jobs.settled(started.jobId)
+  eq('the job completed', settled.outcome.status, 'completed')
+  check('the job detail carries the exit code', /exit code 0/.test(settled.outcome.detail ?? ''), String(settled.outcome.detail))
+  check('the job output holds the command output', (settled.outcome.output ?? '').includes('from-the-job'), JSON.stringify(settled.outcome.output))
+  check('the job label names the tool', settled.spec.label.startsWith('wsl: echo from-the-job'), settled.spec.label)
+
+  const failingJob = await tools.wsl.execute({
+    command: 'echo bad; exit 3', description: 'background failure', runInBackground: true,
+  })
+  const failedSettled = await jobs.settled(failingJob.jobId)
+  eq('a non-zero exit is completed, not failed', failedSettled.outcome.status, 'completed')
+  check('the failure detail carries the code', /exit code 3/.test(failedSettled.outcome.detail ?? ''), String(failedSettled.outcome.detail))
+
+  const stderrJob = await tools.wsl.execute({
+    command: 'echo oops 1>&2; exit 1', description: 'background stderr', runInBackground: true,
+  })
+  const stderrSettled = await jobs.settled(stderrJob.jobId)
+  check('stderr is kept in the job output', (stderrSettled.outcome.output ?? '').includes('oops'), JSON.stringify(stderrSettled.outcome.output))
+
+  const longJob = await tools.wsl.execute({
+    command: 'sleep 30', description: 'background cancel', runInBackground: true,
+  })
+  jobs.record(longJob.jobId).hooks.cancel('test reason')
+  const cancelled = await jobs.settled(longJob.jobId)
+  eq('a cancelled job reports killed', cancelled.outcome.status, 'killed')
+  check('the cancel reason survives', /test reason/.test(cancelled.outcome.detail ?? ''), String(cancelled.outcome.detail))
+
+  const timedJob = await tools.wsl.execute({
+    command: 'sleep 5', description: 'background timeout', runInBackground: true, timeoutMs: 700,
+  })
+  const timedOutcome = await jobs.settled(timedJob.jobId)
+  eq('an explicit timeout still kills a background job', timedOutcome.outcome.status, 'killed')
+  check('the timeout is named in the detail', /timed out/.test(timedOutcome.outcome.detail ?? ''), String(timedOutcome.outcome.detail))
+
+  await rejects('the guard still applies in the background', () => tools.wsl.execute({
+    command: 'rm -rf /tmp/nope', description: 'destructive', runInBackground: true,
+  }), /refused a destructive command/)
+
+  console.log('\nwsl: background without a jobs service')
+  const noJobsTools = makeCtx(shim, {})
+  await rejects('a missing jobs service is a clear error', () => noJobsTools.wsl.execute({
+    command: 'echo x', description: 'no jobs', runInBackground: true,
+  }), /needs the background-job service/)
+
+  // A registry that refuses (no controller serves this composition) must also
+  // leave the caller a way forward.
+  const refusingJobs = { start() { throw new Error('no job controller serves this agent') } }
+  const refusingTools = makeCtx(shim, { jobs: refusingJobs })
+  await rejects('a refusing registry names the fallback', () => refusingTools.wsl.execute({
+    command: 'echo x', description: 'refused job', runInBackground: true,
+  }), /could not start a background job.*foreground/s)
+
   console.log('\nwsl-path')
   const toLinux = await tools['wsl-path'].execute({ path: 'C:\\Program Files\\Git' })
   eq('windows -> linux', toLinux.converted, '/mnt/c/Program Files/Git')
@@ -568,9 +694,9 @@ async function toolTests(tools, shim) {
   for (const [name, tool] of Object.entries(tools)) {
     const cost = tool.description.length + JSON.stringify(tool.parameters).length
     catalog += cost
-    check(`${name}: catalog cost within budget`, cost <= 2_100, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
+    check(`${name}: catalog cost within budget`, cost <= 2_500, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 3_200, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 3_600, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
 }
 
 // --- main ------------------------------------------------------------------
@@ -584,9 +710,10 @@ if (useReal && (modulesRoot === undefined || modulesRoot === '')) {
 
 const spillDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-test-'))
 const shim = useReal ? await makeRealBackend(modulesRoot) : makeShim(spillDir)
+const jobs = makeJobs()
 console.log(`backend: ${useReal ? `real DSH provider (${modulesRoot})` : 'local shim'}`)
 try {
-  const tools = makeCtx(shim)
+  const tools = makeCtx(shim, { jobs })
   check('three tools are registered', Object.keys(tools).sort().join(',') === 'wsl,wsl-env,wsl-path', Object.keys(tools).join(','))
   await unitTests()
   await toolTests(tools, shim)

@@ -29,7 +29,13 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 由 `wsl.exe` 使用**系统默认发行版**——这正是本插件能装到没有 `Ubuntu-22.04` 的机器上的原因。
 
 超过 Windows 命令行上限（32767 字符）的脚本会改为通过 **stdin** 交给
-`wsl.exe -d <distro> -e bash -ls` 执行，因此长命令没有体积上限。
+`wsl.exe [-d <distro>] -e bash -ls` 执行，因此长命令没有体积上限。
+
+传 `stdin` 可以把文本喂给命令（默认是 `/dev/null`，交互式命令会立刻 EOF）；传
+`runInBackground: true` 则把命令交给宿主的任务注册表，模型随后用**已有的**
+**`job_output`** 工具读它、用 **`job_kill`** 停它——不需要任何新工具。后台任务需要
+preset 组合里有 `@deepseek-ai/dsh-tool-jobs`；没有时会直接报错说明，而不是悄悄退化成
+前台执行。
 
 ### `wsl-path`
 
@@ -72,6 +78,8 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 | `timeoutMs` | 否 | number | 超时毫秒数，默认 600000（10 分钟）；到点后杀进程并把结果标记为超时 |
 | `distro` | 否 | string | WSL 发行版；默认使用系统默认发行版 |
 | `env` | 否 | object | 要导出的额外环境变量（键必须是合法 shell 变量名） |
+| `stdin` | 否 | string | 在命令运行前写入其 stdin 的文本（UTF-8） |
+| `runInBackground` | 否 | boolean | 作为后台任务运行并立即返回任务 id；用 `job_output` 读、`job_kill` 停 |
 | `allowDangerous` | 否 | boolean | 置 `true` 才允许执行危险命令 |
 | `translatePaths` | 否 | boolean | 默认 `true`；置 `false` 时 `command` 原样传入，不做路径改写 |
 
@@ -82,6 +90,7 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 | `DSH_WSL_DISTRO` | （系统默认） | 为所有调用固定发行版 |
 | `DSH_WSL_TIMEOUT_MS` | `600000` | 模型命令的默认超时；单次调用可用 `timeoutMs` 覆盖 |
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | 每条流的内存窗口（1 KiB – 8 MiB）；设到 64 MiB 以上时也会抬高落盘上限 |
+| `DSH_WSL_WORKDIR` | `home` | 不传 `workdir` 时的起点：`home`（Linux 的 `~`）、`session`（会话工作目录，Windows 检出对应 `/mnt/<盘>/...`），或任意显式路径 |
 
 无法解析或越界的值会回退到默认值——一个写错的环境变量不该让三个工具一起挂掉。
 配置在挂载时读取一次，改动需重启 DSH 生效。
@@ -89,12 +98,18 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 ## 注意事项
 
 - 每次调用都在全新的 shell 中执行——cwd / 变量 / 函数不会在调用间保留。
-- **stdin 是 `/dev/null`**：交互式命令（`read`、`cat`、不带 `-S` 的 `sudo` 密码提示）
-  会立刻收到 EOF，无法等待输入。本插件不会、也无法弹出任何提示。
+- **stdin 默认是 `/dev/null`，除非传 `stdin`**：交互式命令（`read`、`cat`、不带 `-S`
+  的 `sudo` 密码提示）否则会立刻收到 EOF，无法等待输入；本插件不会、也无法弹出任何提示。
+  通过 `stdin` 传的密码会被记进会话记录。
+- `workdir` 默认 `~`；设 `DSH_WSL_WORKDIR=session` 可改为从会话工作目录开始（见"配置"）。
 - 发行版取调用参数 → `DSH_WSL_DISTRO` → 系统默认，代码里不再硬编码兜底名称。
 - 发行版不存在时会给出明确报错（`distribution "X" is not registered`），而不是
   一个原始 `-1` 退出码；其他启动器错误（`Wsl/Service/WSL_E_*`）也会带错误码上报，
   不会被当成命令自身的退出状态。
+- **后台任务可以活得比这次调用久**：`runInBackground: true` 立即返回任务 id（`wsl-N`）
+  并把工作登记进宿主任务注册表，`job_output` 读它（标记与前台一致）、`job_kill` 停它。
+  后台模式下 10 分钟默认超时**不适用**，但显式 `timeoutMs` 仍然生效；非零退出与前台一样
+  报成 `completed` 并把退出码写进 detail。
 - `command` 与 `workdir` 中的 Windows 路径会自动转换为 `/mnt/...`：
   - `C:\Users\me\a.txt` → `/mnt/c/Users/me/a.txt`；含空格、括号的路径与一行多个路径都支持
     （`C:\Program Files\Git`、`C:/Program Files/Git`、`C:\Program Files (x86)\Steam`、
@@ -160,9 +175,13 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
   路径在构造命令前先改写为 `/mnt/...`。
 - 输出为 `{ exitCode, signal, timedOut, timeoutMs, truncated, stdout, stderr,
   stdoutTotalBytes, stdoutDroppedBytes, stderrTotalBytes, stderrDroppedBytes,
-  stdoutSpillPath, stderrSpillPath }`；`render` 钩子将其格式化为文本并附加上述标记。
-  截断标记引用窗口大小本身而不是由解码文本推算的数字——窗口起点落在多字节字符
+  stdoutSpillPath, stderrSpillPath, jobId }`；`render` 钩子将其格式化为文本并附加上述
+  标记。截断标记引用窗口大小本身而不是由解码文本推算的数字——窗口起点落在多字节字符
   中间时后者会差一两个字节。
+- `jobId` 只有后台启动才会赋值，其余路径一律 `null`，因此两种情况下声明形状都成立。
+- 启动与结算被拆成两步（`runner.launch` / `settle`）：后台任务要同步交给注册表一对
+  `cancel`/`done`，而前台调用只是 await 同一个 settle。被取消的任务会把 provider 的
+  "target 启动前即被终止"拒绝映射成 `killed`——`JobHooks.done` 不允许 reject。
 - 危险命令防护把命令按 `;`／`&`／`|`／换行切成段，每次 `rm` 调用按自身标志单独判定，
   设备/电源类工具在命令位置匹配后才拦截。
 
@@ -182,7 +201,7 @@ wsl.exe [-d <distro>] -e bash -lc "cd <workdir> && <command>"
 ### 测试
 
 ```sh
-npm test          # 180+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
+npm test          # 210+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 
