@@ -104,7 +104,7 @@ jobs:
             echo "$output"
             # The first `npm error` line is only the code; the sentence that says
             # WHY is on the following one, so keep a few.
-            reason="$(echo "$output" | grep 'npm error' | head -3 | tr -d '\r' | tr '\n' ' ' | head -c 300)"
+            reason="$(echo "$output" | grep 'npm error' | head -3 | tr -d '\r' | tr '\n' ' ' | head -c 400)"
             echo "::error::npm publish failed: ${reason:-see the log}"
             exit 1
           fi
