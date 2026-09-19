@@ -667,6 +667,20 @@ async function toolTests(tools, shim) {
   const plainCard = tools.wsl.presentCall({ command: 'pwd', description: 'x' })
   check('no workdir means no cwd on the card', !('cwd' in plainCard))
 
+  // `ToolCallView` knows exactly three cards, and only a terminal card has a
+  // `description` slot: a card outside the vocabulary has no renderer at all.
+  console.log('\nwsl: presentCall cards use the platform vocabulary')
+  const GENERIC_FIELDS = ['card', 'title', 'kind', 'rawInput', 'content', 'locations']
+  const TERMINAL_FIELDS = ['card', 'title', 'description', 'cwd']
+  for (const [name, tool] of Object.entries(tools)) {
+    const view = tool.presentCall({ command: 'echo hi', description: 'label', path: '/tmp', workdir: 'C:\\tmp' })
+    check(`${name}: declares a card the UI knows`, ['generic', 'terminal', 'diff'].includes(view?.card), String(view?.card))
+    check(`${name}: the card carries a title`, typeof view?.title === 'string' && view.title.length > 0, JSON.stringify(view?.title))
+    const allowed = view?.card === 'terminal' ? TERMINAL_FIELDS : GENERIC_FIELDS
+    const extra = Object.keys(view ?? {}).filter((key) => !allowed.includes(key))
+    check(`${name}: no field outside the ${view?.card} card`, extra.length === 0, extra.join(', '))
+  }
+
   console.log('\nwsl: stdin')
   const fed = await tools.wsl.execute({ command: 'cat', description: 'feed stdin', stdin: 'line one\nline two\n' })
   eq('stdin reaches the command', fed.stdout, 'line one\nline two\n')
