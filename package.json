@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "1.8.1",
-  "description": "Model-facing WSL tools for DeepSeek Harness: run Linux commands from Windows with background jobs, stdin, path translation, destructive-command guard and WSL capability diagnostics.",
+  "version": "1.8.2",
+  "description": "Run Linux commands from Windows through WSL, essentially matching a native Linux DSH for command execution: background jobs, stdin, path translation, a destructive-command guard and a WSL capability report. WSL calls run below the DSH sandbox, and a project on a Windows drive keeps Windows filesystem semantics.",
   "type": "module",
   "main": "index.js",
   "license": "MIT",

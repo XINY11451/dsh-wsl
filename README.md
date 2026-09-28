@@ -2,7 +2,18 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A model-facing **WSL** tool plugin for DeepSeek Harness (DSH). It lets an agent run Linux commands through `wsl.exe` directly — no hand-written `.sh` scripts or `pwsh` wrappers.
+A model-facing **WSL** tool plugin for DeepSeek Harness (DSH). It lets an agent run
+Linux commands through `wsl.exe` directly — no hand-written `.sh` scripts or `pwsh`
+wrappers — and for command execution it essentially matches a native Linux DSH: a
+real Linux kernel and bash, exit codes and signals, timeouts, truncation with spill
+files, background jobs the built-in job tools read back, stdin, and automatic
+Windows/WSL path translation.
+
+Two limits are worth knowing before you rely on it. A `wsl` call runs below DSH's
+sandbox, so a file policy does not confine it (see [Sandboxing](#sandboxing)); and a
+project kept on a Windows drive keeps **Windows** filesystem semantics — no POSIX
+permissions, case-insensitive names, no file-change notifications — at a fraction
+of the speed (see [Notes](#notes)).
 
 ## Tools
 
@@ -184,7 +195,21 @@ takes effect on restart.
   workspace: /mnt/d/DSHworkarea (Windows drive mount /mnt/d — builds, installs and git are much slower here; prefer a path under /home when it matters)
   ```
 
-  It is worth believing. Measured on the author's machine: a 128 MB sequential write ran at ~2.1 GB/s on ext4 against ~247 MB/s on `/mnt/d`, and creating 400 small files took under 10 ms against 0.72 s.
+  It is worth believing. Measured on the author's machine: a 128 MB sequential write
+  ran at ~2.1 GB/s on ext4 against ~247 MB/s on `/mnt/d`, and creating 400 small
+  files took under 10 ms against 0.72 s (a later re-run: 884 vs 116 MB/s, and 13 ms
+  against 745 ms — the ratios hold at roughly 8× and 50×).
+
+  It is not only slower. `/mnt/<drive>` is a 9p (drvfs) mount, so it keeps **Windows**
+  filesystem semantics: `chmod`/`chown` do not stick (a `chmod 600` reads back as
+  `777`), names are case-insensitive (so a case-sensitive import only fails on Linux
+  CI), symlinks and the executable bit are synthetic, and **inotify does not work at
+  all** — a watcher inside the distro receives no events for writes from either side
+  (measured with an inotify probe on `/mnt/d`: zero events for a Windows-side write
+  and for a Linux-side write, while the same probe on ext4 reported create, modify
+  and close-write). Dev servers, `--watch` modes and file-watching tests are
+  therefore blind on a Windows drive. Keep a project under `/home` when it matters:
+  it recovers real semantics, real watch events, and the speed above.
 - Destructive commands are refused unless the call passes `allowDangerous: true`:
   - **any recursive delete** — `rm -r`, `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive` — because with stdin on `/dev/null` nothing prompts, so `rm -r tree` deletes silently. Each `rm` invocation is judged on its own command segment, so `rm a -f; rm b -r` cannot combine into a pass;
   - `dd` onto a block device, `mkfs`, partitioning/wiping tools (`fdisk`, `parted`, `wipefs`, `mkswap`, …), power control (`shutdown`, `reboot`, `systemctl reboot`, …), redirection onto a block device, and fork bombs;

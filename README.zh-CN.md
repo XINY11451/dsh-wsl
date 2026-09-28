@@ -2,7 +2,14 @@
 
 [English](README.md) | 简体中文
 
-面向模型（model-facing）的 **WSL** 工具插件，用于 DeepSeek Harness（DSH）。它让智能体直接通过 `wsl.exe` 执行 Linux 命令——无需手写 `.sh` 脚本或 `pwsh` 包装。
+面向模型（model-facing）的 **WSL** 工具插件，用于 DeepSeek Harness（DSH）。它让智能体直接通过
+`wsl.exe` 执行 Linux 命令——无需手写 `.sh` 脚本或 `pwsh` 包装——并且在**命令执行**这一层基本对齐
+Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时、截断与落盘、可用内置 job 工具读回的
+后台作业、stdin，以及 Windows/WSL 路径自动转换。
+
+有两点限制值得在依赖它之前知道：`wsl` 调用位于 DSH 沙箱层之下，文件策略约束不到它
+（见[沙箱边界](#沙箱边界)）；项目放在 Windows 盘上时仍是 **Windows** 的文件系统语义——没有 POSIX
+权限位、文件名大小写不敏感、收不到文件变更通知——速度也低一个数量级（见[注意事项](#注意事项)）。
 
 ## 工具
 
@@ -186,8 +193,17 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
   workspace: /mnt/d/DSHworkarea (Windows drive mount /mnt/d — builds, installs and git are much slower here; prefer a path under /home when it matters)
   ```
 
-  这个提示值得当真。作者机器实测：128 MB 顺序写在 ext4 上约 **2.1 GB/s**，在 `/mnt/d` 上约 **247 MB/s**；
-  创建 400 个小文件 ext4 **不到 10 ms**，`/mnt/d` 要 **0.72 s**。
+  这个提示值得当真。作者机器实测：128 MB 顺序写在 ext4 上约 **2.1 GB/s**，在 `/mnt/d` 上约
+  **247 MB/s**；创建 400 个小文件 ext4 **不到 10 ms**，`/mnt/d` 要 **0.72 s**
+  （后来复测：**884 vs 116 MB/s**、**13 ms vs 745 ms**，比值稳定在约 8× 与 50×）。
+
+  不只是慢。`/mnt/<盘>` 是 9p（drvfs）挂载，保留的是 **Windows** 的文件系统语义：
+  `chmod`/`chown` 不生效（`chmod 600` 读回来是 `777`）、文件名**大小写不敏感**（大小写写错只在
+  Linux CI 上才炸）、符号链接与可执行位是合成的，而且 **inotify 完全不工作**——发行版里的 watcher
+  对两侧写入都收不到任何事件（用 inotify 探针实测：`/mnt/d` 上 Windows 侧写入与 Linux 侧写入均为
+  **0 事件**，而同一探针在 ext4 上正常报出创建/修改/关闭写入）。因此 dev server、`--watch` 模式
+  与文件监听的测试在 Windows 盘上都是瞎的。需要时把项目放到 `/home` 下：语义、监听事件与上面那档
+  速度一次性都回来。
 - 危险命令默认被拒绝，除非调用时传 `allowDangerous: true`：
   - **任何递归删除**——`rm -r`、`rm -rf`、`rm -r -f`、`rm -R --force`、`rm --recursive`——
     因为 stdin 指向 `/dev/null` 时不会产生任何提示，`rm -r tree` 会静默删除整棵树。
