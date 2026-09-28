@@ -100,6 +100,14 @@ both that the entry stays relative and that it resolves.
    artifact, not just the metadata. Scripted requests to `npmjs.com`'s HTML hit a
    Cloudflare challenge; the registry API is the source of truth.
 
+   Expect the registry's caches to lag a publish by minutes, and to lag
+   *inconsistently*: the full packument, the abbreviated (install) packument,
+   `/-/package/<name>/dist-tags` and the tarball URL each cache separately, so one
+   endpoint can already report the new version while `npm install` still answers
+   `404` for its tarball. Re-query instead of concluding the publish failed, and
+   cache-bust the tarball URL (`?cb=<random>`) to tell a stale negative entry apart
+   from an artifact that is genuinely missing.
+
    **Market asset** (this is what users install, and it is independent of npm):
 
    ```sh
