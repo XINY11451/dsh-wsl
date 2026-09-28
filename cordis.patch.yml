@@ -1,5 +1,11 @@
-# This bundle layer registers the wsl tool plugin in an agent preset.
-# Presets can also add the row manually instead of relying on this patch.
+# This bundle layer inserts the wsl tool plugin process-wide, so every agent
+# preset gets the `wsl`/`wsl-path`/`wsl-env` tools without declaring anything.
+#
+# Do NOT also add a `tool-wsl` row to a preset. DSH registers tools by name and
+# the second registration fails with
+# `tool "wsl" is already registered in this scope`. To keep the tools out of a
+# composition, override this row by id in a later patch layer (`- id: tool-wsl`
+# with `disabled: true`) instead of duplicating it.
 
 # The entry name is PATH-RELATIVE on purpose. DSH anchors a relative `name:` to
 # the directory of the patch file that declared it (`anchorInsertedPluginNames`),
