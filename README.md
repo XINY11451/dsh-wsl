@@ -96,17 +96,32 @@ specifier you install under.
    or `dsh plugin add --profile <profile> file:<path-to-this-repo>` from a
    checkout (which names the dependency after this package).
 
-2. Add a `tool-wsl` row to an agent preset's `agent.cordis.yml`:
+2. Nothing else. The package's `cordis.patch.yml` inserts the `tool-wsl` row
+   itself when the bundle is loaded, process-wide, so the three tools are
+   available to every agent preset without further wiring.
 
-   ```yaml
-   - id: tool-wsl
-     name: 'dsh-wsl-tool'
-   ```
-
-   `name` is the installed package name — use your own dependency key if you
-   installed under a different one.
+   Do **not** also list `tool-wsl` in a preset: DSH registers tools by name, and
+   the second registration fails with
+   `tool "wsl" is already registered in this scope`. One row, from the bundle.
 
 3. Restart DSH.
+
+## Compatibility
+
+Verified against DSH **0.1.7-rc.2** (and 0.1.5-rc.2 before it): the tool schemas
+pass DSH's own `assertSupportedJsonSchema`, the subprocess seam is exercised
+against the real provider rather than a shim, and the background-job path is
+checked against the real job registry, including the session-id ownership fence
+that 0.1.7 tightened. `test/real-seam.mjs` is that check and it re-verifies a host
+in about a minute, so point it at any DSH installation after an upgrade:
+
+```sh
+DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
+```
+
+A background job is owned by the calling session (`owner: exec.agent.id`), which
+is what lets the model read it back with `job_output`/`job_kill` and what keeps
+other sessions out; an execution with no agent starts the job unowned.
 
 ## `wsl` parameters
 

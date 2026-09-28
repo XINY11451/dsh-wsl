@@ -62,6 +62,17 @@ try {
   // registry (which this test ignores) and the prompt-section registrar.
   jobsCtx.provide?.('tools', { register() {} })
   jobsCtx.provide?.('systemPrompt', { tools() {}, section() { return () => {} } })
+  // Ownership (DSH 0.1.7): a job's `owner` is a SESSION ID that the registry
+  // resolves to a live agent through this service. Providing it here makes the
+  // registry's own `resolveOwner` run for real, so an owner that is not a
+  // session id fails exactly as it does inside a host — which is what the
+  // control below pins down.
+  const OWNER = 'session-real-seam-owner'
+  // A real Context, because an owned registration calls `owner.ctx.effect()`
+  // to tie the job's teardown to the owner's lifecycle. Nothing else about the
+  // handle is used: the registry looks the id up here and compares it on reads.
+  const liveAgent = { id: OWNER, ctx: new Context() }
+  jobsCtx.provide?.('agents', { get: (id) => (id === OWNER ? liveAgent : undefined) })
   const jobs = new LocalJobRegistry(jobsCtx, {})
   // `tool-jobs` attaches the controller the registry demands and THEN wires
   // prompt sections, which need more of the real composition than a bare
@@ -115,6 +126,43 @@ try {
     jobs.kill(longOne.jobId, undefined, 'test cancel')
     const killed = await jobs.wait(longOne.jobId, 30_000)
     check('a registry kill stops the job', killed?.status === 'killed', String(killed?.status))
+
+    // The owned path, end to end: the execution carries an agent, so the plugin
+    // must hand the registry that agent's SESSION ID and the registry must then
+    // fence the job to it. DSH 0.1.5 accepted the agent handle here, so this is
+    // the check that fails if the plugin ever passes the handle again.
+    const ownedExec = { agent: { id: OWNER, session: { header: { cwd: process.cwd() } } } }
+    const owned = await toolSet.wsl.execute(
+      { command: 'echo owned-output', description: 'owned background job', runInBackground: true },
+      ownedExec,
+    )
+    check('an owned job starts against the real registry', /^wsl-\d+$/.test(owned.jobId ?? ''), String(owned.jobId))
+    check('the owning session can read its job', jobs.get(owned.jobId, OWNER)?.kind === 'wsl', String(owned.jobId))
+    try {
+      jobs.get(owned.jobId)
+      check('an owned job is fenced from a caller-less read', false, 'it was readable')
+    } catch (error) {
+      check('an owned job is fenced from a caller-less read', /belongs to another session/.test(error.message), error.message)
+    }
+    const ownedFinal = await jobs.wait(owned.jobId, 30_000, OWNER)
+    check('the owning session sees its job complete', ownedFinal?.status === 'completed', String(ownedFinal?.status))
+    check('the owning session reads its job output',
+      JSON.stringify(jobs.read(owned.jobId, OWNER) ?? '').includes('owned-output'), '')
+
+    // Control: the same registry REFUSES an agent handle where a session id
+    // belongs. This is exactly how 1.8.0 failed inside DSH 0.1.7, so it proves
+    // the owned check above is load-bearing and not vacuous.
+    try {
+      jobs.start({
+        kind: 'wsl',
+        label: 'agent handle as owner (control)',
+        owner: liveAgent,
+        run: () => ({ cancel() {}, done: Promise.resolve({ status: 'completed' }) }),
+      })
+      check('the registry refuses an agent handle as owner (control)', false, 'it was accepted')
+    } catch (error) {
+      check('the registry refuses an agent handle as owner (control)', /has no live agent/.test(error.message), error.message)
+    }
   } catch (error) {
     check('background jobs work in the real registry', false, error.message)
   }

@@ -86,16 +86,28 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
    `dsh plugin add --profile <profile> file:<path-to-this-repo>` 从本地检出安装
    （依赖名会取本包自身的名字）。
 
-2. 在某个 agent preset 的 `agent.cordis.yml` 中加入 `tool-wsl` 行：
+2. 不必再做别的。本包的 `cordis.patch.yml` 会在组合包加载时**自己插入** `tool-wsl` 行
+   （进程级），因此三个工具对所有 agent preset 都可用，无需额外接线。
 
-   ```yaml
-   - id: tool-wsl
-     name: 'dsh-wsl-tool'
-   ```
-
-   `name` 即安装后的包名；若你用了别的依赖名，就填那个名字。
+   **不要**再在 preset 里列一遍 `tool-wsl`：DSH 按名字注册工具，第二次注册会直接失败
+   —— `tool "wsl" is already registered in this scope`。这一行只由组合包提供。
 
 3. 重启 DSH。
+
+## 兼容性
+
+已在 DSH **0.1.7-rc.2** 上验证（此前为 0.1.5-rc.2）：工具 schema 通过 DSH 自己的
+`assertSupportedJsonSchema`；subprocess 接缝是跑在**真实 provider** 上而非替身；后台任务
+路径跑在**真实 job 注册表**上，包含 0.1.7 收紧的「会话 id 属主围栏」。这套检查就是
+`test/real-seam.mjs`，约一分钟即可重验一个新宿主——升级后把它指向新的 DSH 安装即可：
+
+```sh
+DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
+```
+
+后台任务由**调用方会话**持有（`owner: exec.agent.id`），这既是模型能用
+`job_output`/`job_kill` 读回它的依据，也是其他会话读不到它的围栏；exec 里没有 agent 时
+任务则是无主的。
 
 ## `wsl` 参数
 

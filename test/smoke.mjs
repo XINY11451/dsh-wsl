@@ -771,6 +771,20 @@ async function toolTests(tools, shim) {
   eq('the job completed', settled.outcome.status, 'completed')
   check('the job detail carries the exit code', /exit code 0/.test(settled.outcome.detail ?? ''), String(settled.outcome.detail))
   check('the job output holds the command output', (settled.outcome.output ?? '').includes('from-the-job'), JSON.stringify(settled.outcome.output))
+  // `owner` must be the owner's SESSION ID, not the Agent handle: the registry
+  // resolves it through the live-agent registry (`agents.get(sessionId)`) and
+  // answers `session "…" has no live agent` for anything else. DSH 0.1.5
+  // tolerated the handle, so only a real host or this assertion catches it.
+  check('an execution with no agent starts an unowned job', !('owner' in settled.spec), JSON.stringify(settled.spec.owner))
+  const ownedExec = { agent: { id: 'session-smoke-owner', session: { header: { cwd: process.cwd() } } } }
+  const ownedJob = await tools.wsl.execute(
+    { command: 'echo owned', description: 'owned job', runInBackground: true },
+    ownedExec,
+  )
+  const ownedSpec = jobs.record(ownedJob.jobId).spec
+  check('a background job is owned by the calling session id', ownedSpec.owner === 'session-smoke-owner', JSON.stringify(ownedSpec.owner))
+  check('the owner is a session id, not the agent handle', typeof ownedSpec.owner === 'string', typeof ownedSpec.owner)
+  await jobs.settled(ownedJob.jobId)
   // The label is the bare command: the runtime already frames it with the job id
   // and the `wsl` kind, so a prefix here would read "wsl-1 [wsl] — wsl: …".
   eq('the job label is the command, unprefixed', settled.spec.label, 'echo from-the-job')
