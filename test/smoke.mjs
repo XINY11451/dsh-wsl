@@ -369,6 +369,22 @@ async function unitTests() {
         notVolatile.length === 0,
         notVolatile.join(', '),
       )
+
+      // A volatile field is a cosmokit CELL at runtime, not the value: the resolved
+      // config a host hands `apply` looks like `{ dangerGuard: Cell(false) }`, and
+      // reading it without `.get()` silently keeps the default, so a switch would
+      // light up and do nothing. `lib/config.js` unwraps it; this pins that.
+      const resolved = installed.Config({ dangerGuard: false, translatePaths: false, tools: { wsl: false } })
+      check(
+        'a resolved volatile field really is a cell',
+        resolved !== null && typeof resolved === 'object'
+          && typeof resolved.dangerGuard?.get === 'function',
+        typeof resolved?.dangerGuard,
+      )
+      const liveConfig = resolveConfig({}, resolved)
+      eq('the plugin reads a real resolved volatile switch', liveConfig.dangerGuard, false)
+      eq('the plugin reads a real nested volatile switch', liveConfig.tools.wsl, false)
+      eq('the plugin reads the third real volatile switch', liveConfig.translatePaths, false)
     }
   }
 
