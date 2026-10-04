@@ -118,25 +118,36 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 
 ## 在侧边栏开一个 WSL 终端
 
-桌面版侧边栏终端的 shell 取自组合里的 `terminal-controller` 条目，所以这是**配置、不是插件代码**
-——那个选择列表属于核心 UI，插件无法往里加条目。把下面这段加到
-`$DSH_HOME/profiles/<profile>/cordis.patch.yml`：
+装了这个插件，桌面版侧边栏终端就多出一个 **WSL** shell：插件的 `cordis.patch.yml` 覆盖组合里的
+`terminal-controller` 行，而该行配置的 shell 会排在**第一位**并成为默认；它由 `shellCandidates`
+发现的 `powershell`/`cmd`/`bash` 等仍然可选，所以「新建终端」里 WSL 与它们并列。
 
 ```yaml
 - id: terminal-controller
-  name: "@deepseek-ai/dsh-api-terminal-controller"
   config:
     shell:
       path: 'C:\Windows\System32\wsl.exe'
       name: WSL
-      args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+      args: ['-e', 'bash', '-l']
 ```
 
-配置的 shell 会排在**第一位**并成为默认；由 `shellCandidates` 发现的
-`powershell`/`cmd`/`bash` 等仍然可选。这里只设了 `shell`：按 id 的 patch 会**整段替换**该行的
-config，其余字段各自回到 schema 默认值。会话工作区是 Windows 路径，`wsl.exe` 会自动翻译，因此终端
-会像 Windows shell 一样落在 `/mnt/<盘>/…`；把 `-d …` 去掉即跟随系统默认发行版。
-**下次启动应用时生效。**
+- **不锁定发行版**：`wsl.exe` 跟随系统默认，与工具在未设 `DSH_WSL_DISTRO` 时的规则一致。
+- 会话工作区是 Windows 路径，`wsl.exe` 会自动翻译，因此终端像 Windows shell 一样落在
+  `/mnt/<盘>/…`；而且是**真 PTY**（`xterm-256color`），全屏程序可用。
+- **要锁定发行版或换默认 shell**，在更靠后的 patch 层里重述该行即可 —— profile 自己的
+  `cordis.patch.yml` 优先于本组合包：
+
+  ```yaml
+  - id: terminal-controller
+    config:
+      shell:
+        path: 'C:\Windows\System32\wsl.exe'
+        name: WSL
+        args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+  ```
+
+  按 id 的 patch 会**整段替换**该行 config，其他设置要一并重述。
+- **下次启动应用时生效。**
 
 ## `wsl` 参数
 
@@ -340,7 +351,7 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 `file:` 依赖是**副本**，改本仓库不会改变 DSH 实际加载的内容。任何改动之后：
 
 ```sh
-npm run sync                  # 复制到 ~/.dsh/profiles/web/node_modules/dsh-wsl
+npm run sync                  # 复制到 ~/.dsh/profiles/desktop/node_modules/dsh-wsl
 npm run sync -- /path/to/profiles/<profile>/node_modules/<你的依赖名>
 ```
 

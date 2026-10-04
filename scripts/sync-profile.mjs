@@ -7,7 +7,9 @@
 //
 //   node scripts/sync-profile.mjs [profileDir]
 //
-// Defaults to `%USERPROFILE%/.dsh/profiles/web/node_modules/dsh-wsl`.
+// Defaults to `%USERPROFILE%/.dsh/profiles/desktop/node_modules/dsh-wsl` — the
+// desktop app's profile, which is what ships today. Pass a path for any other
+// profile (`web`, a shadow copy, …).
 
 import { cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -16,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const target = resolve(
-  process.argv[2] ?? join(homedir(), '.dsh', 'profiles', 'web', 'node_modules', 'dsh-wsl'),
+  process.argv[2] ?? join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-wsl'),
 )
 
 if (!existsSync(packageRoot)) throw new Error(`source package not found: ${packageRoot}`)

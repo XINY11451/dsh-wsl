@@ -136,28 +136,41 @@ other sessions out; an execution with no agent starts the job unowned.
 
 ## A WSL terminal in the sidebar
 
-The desktop app's sidebar terminal picks its shell from the composed
-`terminal-controller` entry, so a WSL shell is a **profile patch, not plugin
-code**: that picker is core UI, and no plugin can add an entry to it. Add this to
-`$DSH_HOME/profiles/<profile>/cordis.patch.yml`:
+Installing this plugin also gives the desktop app's sidebar terminal a **WSL**
+shell. `cordis.patch.yml` overrides the composed `terminal-controller` row, whose
+configured shell is listed **first** and selected by default; the shells that row
+discovers (`powershell`, `cmd`, `bash`, …) stay selectable, so 新建终端 offers WSL
+next to them.
 
 ```yaml
 - id: terminal-controller
-  name: "@deepseek-ai/dsh-api-terminal-controller"
   config:
     shell:
       path: 'C:\Windows\System32\wsl.exe'
       name: WSL
-      args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+      args: ['-e', 'bash', '-l']
 ```
 
-The configured shell is listed **first** and becomes the default; the shells
-discovered from `shellCandidates` (`powershell`, `cmd`, `bash`, …) stay
-selectable. Only `shell` is set, because an id-targeted patch replaces the whole
-config, so every other field falls back to its schema default. The session
-workspace is a Windows path that `wsl.exe` translates, so the terminal opens in
-`/mnt/<drive>/…` exactly like the Windows shells do. Drop `-d …` to follow the
-system default distribution. It applies at the next app start.
+- No distribution is pinned, so `wsl.exe` follows the system default — the same
+  rule the tools use when `DSH_WSL_DISTRO` is unset.
+- The session workspace is a Windows path that `wsl.exe` translates, so the
+  terminal opens in `/mnt/<drive>/…` exactly like the Windows shells do; and it is
+  a real PTY (`xterm-256color`), so full-screen programs work.
+- **Pinning a distribution, or choosing a different default, is a later patch
+  layer** — a profile's own `cordis.patch.yml` wins over this bundle:
+
+  ```yaml
+  - id: terminal-controller
+    config:
+      shell:
+        path: 'C:\Windows\System32\wsl.exe'
+        name: WSL
+        args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+  ```
+
+  An id-targeted patch replaces that row's whole config, so restate anything else
+  you had set on it.
+- Applies at the next app start.
 
 ## `wsl` parameters
 
@@ -367,7 +380,7 @@ A `file:` dependency is a **copy**, so editing this checkout does not change wha
 DSH loads. After any change:
 
 ```sh
-npm run sync                  # copies into ~/.dsh/profiles/web/node_modules/dsh-wsl
+npm run sync                  # copies into ~/.dsh/profiles/desktop/node_modules/dsh-wsl
 npm run sync -- /path/to/profiles/<profile>/node_modules/<your-key>
 ```
 

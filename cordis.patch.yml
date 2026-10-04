@@ -19,3 +19,35 @@
 - insert:
     - id: tool-wsl
       name: './index.js'
+
+# ── Sidebar terminal: a WSL shell, listed first and selected by default ────────
+#
+# The desktop app's 新建终端 list is built from the composed `terminal-controller`
+# row: it discovers shells from `shellCandidates` and puts the configured `shell`
+# first. Overriding that row here is what makes installing this plugin also give
+# you a Linux terminal in the sidebar. (A candidate entry cannot do it: a shell
+# discovered by name gets `-i` appended, and `wsl.exe -i` is a hard error.)
+#
+# The path is absolute because the configured shell must resolve, and a shell that
+# cannot resolve makes every new terminal fail rather than just this one: wsl.exe
+# ships with Windows at a fixed location, so this resolves even where no
+# distribution is installed yet.
+#
+# No distro is pinned, so `wsl.exe` follows the system default — the same rule the
+# tools use when DSH_WSL_DISTRO is unset. Add `-d <name>` to `args` to pin one.
+#
+# This changes the default terminal shell, which is deliberate for a WSL plugin
+# and reversible: a later patch layer wins, so restating the row in a profile's own
+# cordis.patch.yml overrides it (and a profile that sets its own `shell` there is
+# unaffected by this row).
+#
+# An id-targeted patch replaces the whole config, so anything the layer below set
+# on this row (limits, scrollback, a custom shellCandidates list) falls back to its
+# schema default. Only `shell` is set here on purpose. Never add `disabled:` here:
+# that would switch off the terminal feature for the user instead of just this row.
+- id: terminal-controller
+  config:
+    shell:
+      path: 'C:\Windows\System32\wsl.exe'
+      name: WSL
+      args: ['-e', 'bash', '-l']

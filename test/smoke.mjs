@@ -911,12 +911,9 @@ async function toolTests(tools, shim) {
   }
   check('total catalog cost within budget', catalog <= 3_800, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
 
-  // The bundle patch must load this package's own entry without depending on the
-  // folder it was installed into. npm refuses the repository name (`dsh-wsl` is
-  // too similar to the existing package `is-wsl`), so the published name is
-  // `dsh-wsl-tool` while a local `file:` dependency may still sit in
-  // `node_modules/dsh-wsl`. A bare name here would only resolve in one of those
-  // layouts, and DSH anchors a relative `name:` beside the patch file itself.
+  // The bundle patch carries two independent things: the inserted tool row, and a
+  // config override that gives the desktop sidebar terminal a WSL shell. Assert
+  // each on its own terms rather than counting `- id:` lines across both.
   console.log('\nbundle manifest and patch entry')
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
@@ -925,8 +922,12 @@ async function toolTests(tools, shim) {
   const patchFile = resolve(packageRoot, patchRel ?? '')
   check('the declared patch file exists', patchRel !== undefined && existsSync(patchFile), patchFile)
   const patchText = readFileSync(patchFile, 'utf8')
-  check('the patch inserts exactly one row', (patchText.match(/^\s*- id:/gm) ?? []).length === 1)
-  const entryName = /^\s*name:\s*'([^']+)'\s*$/m.exec(patchText)?.[1]
+
+  const overrideAt = patchText.indexOf('- id: terminal-controller')
+  const insertBlock = overrideAt === -1 ? patchText : patchText.slice(0, overrideAt)
+  check('the patch has an insert list', insertBlock.includes('- insert:'))
+  check('the patch inserts exactly one row', (insertBlock.match(/^\s*- id:/gm) ?? []).length === 1)
+  const entryName = /^\s*name:\s*'([^']+)'\s*$/m.exec(insertBlock)?.[1]
   check(
     'the patch entry name is folder-independent',
     typeof entryName === 'string' && entryName.startsWith('./'),
@@ -936,6 +937,37 @@ async function toolTests(tools, shim) {
     'the patch entry resolves to a real file',
     typeof entryName === 'string' && entryName.startsWith('./') && existsSync(resolve(dirname(patchFile), entryName)),
     String(entryName),
+  )
+
+  // The override half: it must address a real composed row by id, must not switch
+  // that row off (that would take the terminal feature away rather than adjust it),
+  // and must point at a shell that exists.
+  const overrideBlock = overrideAt === -1 ? '' : patchText.slice(overrideAt)
+  check(
+    'the override targets the sidebar terminal row',
+    /^\s*- id:\s*terminal-controller\s*$/m.test(overrideBlock),
+    'a wrong id would silently do nothing',
+  )
+  check(
+    'the override never disables the row it targets',
+    !/^\s*disabled:/.test(overrideBlock),
+    'disabling terminal-controller would remove the whole sidebar terminal',
+  )
+  const shellPath = /^\s*path:\s*'([^']+)'\s*$/m.exec(overrideBlock)?.[1]
+  check(
+    'the override names the WSL launcher',
+    typeof shellPath === 'string' && /wsl\.exe$/i.test(shellPath),
+    String(shellPath),
+  )
+  check(
+    'the override shell exists on a Windows host',
+    process.platform !== 'win32' || (typeof shellPath === 'string' && existsSync(shellPath)),
+    String(shellPath),
+  )
+  check(
+    'the override does not pin a distribution',
+    !/^\s*args:.*-d/m.test(overrideBlock),
+    'pinning one would break machines with a different default distro',
   )
 }
 

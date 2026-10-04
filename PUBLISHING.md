@@ -61,10 +61,11 @@ both that the entry stays relative and that it resolves.
    ```
 
    `npm run sync` defaults to
-   `%USERPROFILE%/.dsh/profiles/web/node_modules/dsh-wsl` — the folder the
+   `%USERPROFILE%/.dsh/profiles/desktop/node_modules/dsh-wsl` — the folder the
    profile's dependency key created, which need not match the npm name. Pass a
    path to target another profile. Restart DSH afterwards: the plugin is imported
-   once at load.
+   once at load. A patch change (the tool row, or the sidebar terminal override)
+   is read at composition time, so it needs that restart too.
 
 3. The tag runs the pipeline. The order is deliberate — the release asset goes
    **first** because it is the market's critical path, then npm, so a failing npm
