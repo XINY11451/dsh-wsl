@@ -111,6 +111,23 @@ const scope = {
     return Promise.resolve(true)
   },
 }
+// The ORDER of these two calls is the point: a form fetched before the Host lists
+// its namespace is born `unavailable` and never upgrades, which is how this panel
+// lost every switch in the field. So the fake records the order.
+const configFormsCalls = []
+const configForms = {
+  get: (namespace) => {
+    configFormsCalls.push(`get:${namespace}`)
+    return scope
+  },
+  whileServed: (namespaces, register) => {
+    configFormsCalls.push(`whileServed:${namespaces.join(',')}`)
+    const off = register(new Set(namespaces))
+    return () => {
+      if (typeof off === 'function') off()
+    }
+  },
+}
 const ctx = {
   slots: {
     inject: (_seat, callback) => callback(),
@@ -120,7 +137,7 @@ const ctx = {
     },
   },
   inject: (deps, callback) => {
-    callback({ configForms: { get: () => scope }, effect: () => () => {} })
+    callback({ configForms, effect: () => () => {} })
   },
 }
 let threw = null
@@ -130,6 +147,8 @@ try {
   threw = error
 }
 check('apply mounts without throwing', threw === null, String(threw))
+eq('it waits for the Host to serve the namespace', configFormsCalls[0], 'whileServed:tool-wsl')
+eq('the form is taken only once the namespace is served', configFormsCalls[1], 'get:tool-wsl')
 
 console.log('\nslot registration')
 const main = registered.find((r) => r.seat.name === 'main')
@@ -237,6 +256,20 @@ for (const [name, broken] of [
       effect: () => () => {},
     }),
   }],
+  ['a configForms face without whileServed', {
+    slots: ctx.slots,
+    inject: (_deps, callback) => callback({
+      configForms: { get: () => scope },
+      effect: () => () => {},
+    }),
+  }],
+  ['a namespace that never becomes served', {
+    slots: ctx.slots,
+    inject: (_deps, callback) => callback({
+      configForms: { get: () => scope, whileServed: () => () => {} },
+      effect: () => () => {},
+    }),
+  }],
 ]) {
   let error = null
   try {
@@ -246,6 +279,52 @@ for (const [name, broken] of [
   }
   check(`apply survives ${name}`, error === null, String(error))
 }
+
+// A namespace the Host has not listed YET must read as "waiting", never as "this
+// DSH does not provide it": the shipped panel said the latter while the Host was
+// already serving the namespace, which sent the first diagnosis the wrong way.
+console.log('\npending reads as waiting, not as absent')
+const pendingRegistered = []
+const pendingCtx = {
+  slots: {
+    inject: (_seat, callback) => callback(),
+    register: (seat, component) => {
+      pendingRegistered.push({ seat, component })
+      return () => {}
+    },
+  },
+  inject: (_deps, callback) => callback({
+    configForms: { get: () => scope, whileServed: () => () => {} },
+    effect: () => () => {},
+  }),
+}
+mod.apply(pendingCtx)
+const pendingMain = pendingRegistered.find((r) => r.seat.name === 'main')
+const pendingProps = typeof pendingMain?.seat.inject === 'function' ? pendingMain.seat.inject() : {}
+let pendingTree = null
+try {
+  pendingTree = pendingMain.component({ ...pendingProps })
+} catch (error) {
+  check('the pending panel renders', false, String(error))
+}
+const pendingTexts = []
+const collectPending = (node) => {
+  if (typeof node === 'string') {
+    pendingTexts.push(node)
+    return
+  }
+  if (node === null || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const child of node) collectPending(child)
+    return
+  }
+  collectPending(node.props?.children)
+}
+collectPending(pendingTree)
+const pendingText = pendingTexts.join('\n')
+check('a not-yet-served namespace says it is waiting', /正在等待 Host/.test(pendingText), pendingText.slice(0, 120))
+check('it does not claim the DSH has no such scope', !/未提供该插件的配置作用域/.test(pendingText))
+check('the waiting note names the row being waited for', pendingText.includes('tool-wsl'))
 
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if (failures.length > 0) {
