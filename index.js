@@ -22,6 +22,7 @@
 // every switch below is consulted once, in `apply`.
 
 import { resolveConfig } from './lib/config.js'
+import { pickSchemaBuilder } from './lib/schema.js'
 import { createRunner } from './lib/runner.js'
 import { createWslTool } from './lib/tools/wsl.js'
 import { createWslPathTool } from './lib/tools/wsl-path.js'
@@ -31,17 +32,28 @@ export const name = 'tool-wsl'
 export const inject = ['tools', 'subprocess']
 
 // The schema is what gives this plugin a settings surface at all: the platform
-// derives the namespace the sidebar panel writes to from the entry's id plus this
-// schema. It needs `@deepseek-ai/schemastery`, which a real DSH profile supplies
-// (the plugin declares it as an optional peer dependency) but which is absent when
-// this module is imported standalone, as `test/smoke.mjs` does. A soft import
-// keeps the tools runnable there: without a schema every switch keeps its default
-// and only the panel is missing.
+// projects the config of every entry that declares one (`ctx.settings.describe()`
+// is keyed by entry id), and the sidebar panel reads and writes that projection.
+// It needs `@deepseek-ai/schemastery`, which a real DSH profile supplies (the
+// plugin declares it as an optional peer dependency) but which is absent when this
+// module is imported standalone, as `test/smoke.mjs` does. A soft import keeps the
+// tools runnable there: without a schema every switch keeps its default and only
+// the panel is missing — and `lib/schema.js` explains why the PICKING, not just
+// the import, is the fragile part.
 let Schema = null
 try {
-  ({ Schema } = await import('@deepseek-ai/schemastery'))
+  Schema = pickSchemaBuilder(await import('@deepseek-ai/schemastery'))
 } catch {
   Schema = null
+}
+if (Schema === null) {
+  // Not fatal — the tools run on their defaults — but it is exactly the difference
+  // between a panel with switches and one without, so say so instead of failing
+  // quietly.
+  console.warn(
+    'dsh-wsl-tool: no schema builder (@deepseek-ai/schemastery) — the tools run on ' +
+    'their defaults and the sidebar panel will not offer the switches',
+  )
 }
 
 /**

@@ -14,12 +14,13 @@
 
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { apply } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
+import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
 import { destructiveReason } from '../lib/guard.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
@@ -291,6 +292,35 @@ async function unitTests() {
   eq('tilde-only path stays bare', quotePath('~'), '~')
   eq('relative path is quoted', quotePath('relative dir'), "'relative dir'")
   eq('a single quote is escaped', shellQuote("it's"), "'it'\\''s'")
+
+  // The schema builder has to be PICKED, not destructured: the real namespace of
+  // `@deepseek-ai/schemastery` is `{ default: Schema }`, so `{ Schema }` is
+  // undefined, `Config` silently becomes undefined, the platform has no schema to
+  // project, and the sidebar panel renders without a single switch while the tools
+  // keep working. Measured in the field; these pin the picking.
+  console.log('\nschema builder interop')
+  const fakeSchema = { object: () => ({}) }
+  eq('the builder is found on the default export', pickSchemaBuilder({ default: fakeSchema }), fakeSchema)
+  eq('the builder is found as a named export', pickSchemaBuilder({ Schema: fakeSchema }), fakeSchema)
+  eq('the builder is found on a Schema property of the default', pickSchemaBuilder({ default: { Schema: fakeSchema } }), fakeSchema)
+  eq('a namespace without a builder is refused', pickSchemaBuilder({ default: {} }), null)
+  eq('a namespace carrying the wrong shape is refused', pickSchemaBuilder({ default: { object: 'not a function' } }), null)
+  eq('junk is refused instead of throwing', pickSchemaBuilder(null), null)
+  const profileModules = process.env.DSH_WSL_SCHEMA_ROOT ?? join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules')
+  const realSchemaEntry = join(profileModules, '@deepseek-ai', 'schemastery', 'lib', 'index.mjs')
+  if (existsSync(realSchemaEntry)) {
+    const real = await import(pathToFileURL(realSchemaEntry).href)
+    eq('the real package really hides the builder under default', real.Schema, undefined)
+    const builder = pickSchemaBuilder(real)
+    const built = builder.object({
+      tools: builder.object({ wsl: builder.boolean().default(true) }),
+      timeoutMs: builder.number().default(0),
+    })
+    eq('the real builder builds a schema that fills in defaults',
+      JSON.stringify(built({})), '{"tools":{"wsl":true},"timeoutMs":0}')
+  } else {
+    console.log(`  skip  real schemastery not reachable at ${realSchemaEntry}`)
+  }
 
   console.log('\ndestructive guard')
   const bad = destructiveReason

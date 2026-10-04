@@ -67,6 +67,22 @@ both that the entry stays relative and that it resolves.
    once at load. A patch change (the tool row, or the sidebar terminal override)
    is read at composition time, so it needs that restart too.
 
+   **Then prove the schema really builds from the installed copy**, because this
+   is the one failure the tools survive:
+
+   ```sh
+   cd ~/.dsh/profiles/desktop/node_modules/dsh-wsl
+   node -e "import('./index.js').then(m => console.log(typeof m.Config, JSON.stringify(m.Config({}))))"
+   ```
+
+   It must print `function` and the resolved defaults. If it prints `undefined`,
+   the plugin declares no `Config`, the platform has no schema to project, the
+   entry's config status stays `absent` and the sidebar panel renders without a
+   single switch while all three tools keep working. The fragile step is the
+   interop hop: `@deepseek-ai/schemastery` exports its builder as the **default**
+   export, so `const { Schema } = await import(...)` silently yields `undefined`
+   (see `lib/schema.js`, and the regression test that pins the picking).
+
 3. The tag runs the pipeline. The order is deliberate — the release asset goes
    **first** because it is the market's critical path, then npm, so a failing npm
    publish fails the run loudly without withholding the release.
