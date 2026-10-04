@@ -64,26 +64,37 @@ if (Schema === null) {
  * documents the precedence: this configuration wins, the environment is the
  * deployment default, the built-in defaults are last.
  *
- * `distro` and `timeoutMs` are deliberately absent from the sidebar panel (they
- * are values, not features) but stay here so a patch or a panel could grow a
- * field for them without a schema change.
+ * `distro` and `timeoutMs` are values rather than switches, but they are here so a
+ * patch (or a future row in the panel) can set them without a schema change.
+ *
+ * EVERY field is `.volatile()`, and that is not decoration: DSH's settings service
+ * projects a plugin's config into a form only through `volatileForm()`, which keeps
+ * a field only when its nearest ancestor is marked volatile — a schema without one
+ * contributes no form at all, so the entry never reaches `ctx.settings.describe()`,
+ * its namespace is never served to the browser, and the sidebar panel waits for a
+ * scope that will never arrive. Volatile is also what the platform means by "can be
+ * edited without remounting", which is what the update hook below relies on.
+ *
+ * A volatile field must not sit inside another volatile one, so `tools` is a plain
+ * object whose leaf switches are volatile, not a volatile object.
  */
 export const Config = Schema?.object({
   tools: Schema.object({
-    wsl: Schema.boolean().default(true).description('注册 `wsl` 工具：在 WSL 里执行 Linux 命令。'),
-    path: Schema.boolean().default(true).description('注册 `wsl-path` 工具：Windows 路径与 /mnt/... 互转。'),
-    env: Schema.boolean().default(true).description('注册 `wsl-env` 工具：汇总 WSL 环境能力。'),
-  }).description('要注册哪几个工具。'),
-  backgroundJobs: Schema.boolean().default(true).description('允许 `runInBackground`，由内置 job 工具读回结果。'),
-  translatePaths: Schema.boolean().default(true).description('默认把命令里的 Windows 路径转成 /mnt/...。'),
-  startInSessionWorkspace: Schema.boolean().default(false).description('未传 `workdir` 时从会话工作区开始，而不是 Linux 家目录。'),
-  dangerGuard: Schema.boolean().default(true).description('危险命令必须显式 `allowDangerous` 才放行。关掉后模型可直接删除/分区。'),
-  distro: Schema.string().default('').description('要固定使用的发行版；留空则用系统默认（也可用 DSH_WSL_DISTRO）。'),
-  timeoutMs: Schema.number().default(0).description('默认命令超时毫秒数；0 表示用内置默认（也可用 DSH_WSL_TIMEOUT_MS）。'),
+    wsl: Schema.boolean().default(true).description('注册 `wsl` 工具：在 WSL 里执行 Linux 命令。').volatile(),
+    path: Schema.boolean().default(true).description('注册 `wsl-path` 工具：Windows 路径与 /mnt/... 互转。').volatile(),
+    env: Schema.boolean().default(true).description('注册 `wsl-env` 工具：汇总 WSL 环境能力。').volatile(),
+  }).description('要注册哪几个工具；这三个开关在下次启动 DSH 后生效。'),
+  backgroundJobs: Schema.boolean().default(true).description('允许 `runInBackground`，由内置 job 工具读回结果。').volatile(),
+  translatePaths: Schema.boolean().default(true).description('默认把命令里的 Windows 路径转成 /mnt/...。').volatile(),
+  startInSessionWorkspace: Schema.boolean().default(false).description('未传 `workdir` 时从会话工作区开始，而不是 Linux 家目录。').volatile(),
+  dangerGuard: Schema.boolean().default(true).description('危险命令必须显式 `allowDangerous` 才放行。关掉后模型可直接删除/分区。').volatile(),
+  distro: Schema.string().default('').description('要固定使用的发行版；留空则用系统默认（也可用 DSH_WSL_DISTRO）。').volatile(),
+  timeoutMs: Schema.number().default(0).description('默认命令超时毫秒数；0 表示用内置默认（也可用 DSH_WSL_TIMEOUT_MS）。').volatile(),
 }).description('dsh-wsl 的功能开关与默认值。')
 
 export function apply(ctx, settings = {}) {
-  // Resolved once per mount: a settings change is a restart, not a live edit.
+  // Resolved once per mount. Behaviour reads this object at call time, so the
+  // volatile-update hook below can change it in place without remounting.
   const config = resolveConfig(process.env, settings)
   const runner = createRunner(ctx, config)
   // `ctx` is passed to the `wsl` tool for the optional `jobs` service only
@@ -92,4 +103,20 @@ export function apply(ctx, settings = {}) {
   if (config.tools.wsl) ctx.tools.register(createWslTool({ ctx, config, runner }))
   if (config.tools.path) ctx.tools.register(createWslPathTool({ config, runner }))
   if (config.tools.env) ctx.tools.register(createWslEnvTool({ config, runner }))
+
+  // A volatile edit is written into the same object the loader handed us and then
+  // announced, so re-resolving in place is what makes the behaviour switches
+  // (background jobs, path translation, the guard, workdir, distro, timeout) take
+  // effect without a restart. The three `tools.*` switches are the exception: they
+  // decide which tools were registered, so they need the next start, and the panel
+  // says so on those rows.
+  if (typeof ctx.on === 'function') {
+    ctx.on('loader/volatile-update', () => {
+      try {
+        Object.assign(config, resolveConfig(process.env, settings))
+      } catch (error) {
+        console.error('dsh-wsl-tool: applying a live settings change failed', error)
+      }
+    })
+  }
 }

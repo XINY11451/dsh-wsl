@@ -241,15 +241,21 @@ function makeJobs() {
 
 function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
   const tools = {}
+  const handlers = new Map()
   const ctx = {
     tools: { register(tool) { tools[tool.name] = tool } },
     subprocess: shim,
     // Optional services: the plugin must work when these return undefined.
     get: (name) => (name === 'jobs' ? jobs : name === 'shellEnv' ? shellEnv : undefined),
+    // Event handlers, so a test can fire a live settings update. Kept off the tool
+    // map's enumerable keys: those are asserted on with Object.keys.
+    on: (event, callback) => { handlers.set(event, callback) },
   }
   // `settings` is the plugin's own configuration as the composition resolves it
-  // against the Config schema — what the sidebar panel writes.
+  // against the Config schema — what the sidebar panel writes. It is passed BY
+  // REFERENCE because a volatile edit mutates it in place.
   apply(ctx, settings)
+  Object.defineProperty(tools, 'handlers', { value: handlers, enumerable: false })
   return tools
 }
 
@@ -320,6 +326,50 @@ async function unitTests() {
       JSON.stringify(built({})), '{"tools":{"wsl":true},"timeoutMs":0}')
   } else {
     console.log(`  skip  real schemastery not reachable at ${realSchemaEntry}`)
+  }
+
+  // The settings projection keeps ONLY volatile fields, so a schema without them
+  // contributes no form at all: the entry never reaches `ctx.settings.describe()`,
+  // its namespace is never served, and the sidebar panel waits forever for a scope
+  // that will not come (measured). This is the check that catches it, run against
+  // the INSTALLED copy, where the dependency actually resolves.
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  const repoVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
+  const installedDir = join(profileModules, 'dsh-wsl')
+  const installedEntry = join(installedDir, 'index.js')
+  if (!existsSync(installedEntry)) {
+    console.log(`  skip  installed copy not found at ${installedEntry}`)
+  } else {
+    const installedVersion = JSON.parse(readFileSync(join(installedDir, 'package.json'), 'utf8')).version
+    if (installedVersion !== repoVersion) {
+      console.log(`  skip  installed copy is ${installedVersion}, this checkout is ${repoVersion} - run \`npm run sync\``)
+    } else {
+      const installed = await import(pathToFileURL(installedEntry).href)
+      const schema = installed.Config
+      // A schemastery schema is callable, so it is a function, not a plain object.
+      check(
+        'the installed plugin declares a schema',
+        schema !== undefined && (typeof schema === 'object' || typeof schema === 'function'),
+        typeof schema,
+      )
+      const leaves = []
+      const walkSchema = (node, path) => {
+        if (node === null || (typeof node !== 'object' && typeof node !== 'function')) return
+        if (node.type === 'object' && node.dict !== undefined) {
+          for (const [key, child] of Object.entries(node.dict)) walkSchema(child, [...path, key])
+          return
+        }
+        leaves.push({ path: path.join('.'), volatile: node.meta?.volatile === true })
+      }
+      if (schema !== undefined && schema !== null) walkSchema(schema, [])
+      check('the installed schema carries the switches', leaves.length >= 7, String(leaves.length))
+      const notVolatile = leaves.filter((leaf) => !leaf.volatile).map((leaf) => leaf.path)
+      check(
+        'every switch is volatile (a plain schema contributes no form at all)',
+        notVolatile.length === 0,
+        notVolatile.join(', '),
+      )
+    }
   }
 
   console.log('\ndestructive guard')
@@ -686,6 +736,24 @@ async function toolTests(tools, shim) {
   const allOffTools = makeCtx(shim, { settings: { tools: { wsl: false, path: false, env: false } } })
   eq('all three switches off register nothing', Object.keys(allOffTools).length, 0)
   eq('the control mount registers all three', Object.keys(tools).sort().join(','), 'wsl,wsl-env,wsl-path')
+
+  // A volatile field is written into the same object the loader handed `apply` and
+  // then announced, so the behaviour switches must take effect with no remount. The
+  // settings object is mutated in place here, exactly as the loader does it.
+  console.log('\nwsl: live settings updates')
+  const liveSettings = { dangerGuard: true }
+  const liveTools = makeCtx(shim, { settings: liveSettings })
+  await rejects('the guard is on at mount', () => liveTools.wsl.execute({
+    command: 'rm -r -f /tmp/dsh-wsl-live; echo ran', description: 'still guarded',
+  }), /refused a destructive command/)
+  const fireUpdate = liveTools.handlers?.get('loader/volatile-update')
+  check('the plugin listens for volatile updates', typeof fireUpdate === 'function')
+  liveSettings.dangerGuard = false
+  if (typeof fireUpdate === 'function') fireUpdate()
+  const liveRun = await liveTools.wsl.execute({
+    command: 'rm -r -f /tmp/dsh-wsl-live; echo ran', description: 'now unguarded',
+  })
+  eq('a behaviour switch applies without a restart', liveRun.stdout.trim(), 'ran')
 
   console.log('\nwsl: timeout')
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })
