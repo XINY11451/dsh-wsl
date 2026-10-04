@@ -99,7 +99,7 @@ const snapshot = {
   status: 'ready',
   value: { tools: { wsl: true, path: true, env: true }, backgroundJobs: true, translatePaths: true },
   base: {},
-  user: { tools: { wsl: false } }, // present => this row renders as overridden
+  user: { tools: { wsl: false }, dangerGuard: false }, // two overrides, so the single reset writes a real batch
   writable: true,
   revision: 7,
 }
@@ -231,19 +231,26 @@ const setOp = ops.find((entry) => entry.batch?.[0]?.op === 'set')
 eq('a toggle writes the row path', JSON.stringify(setOp?.batch?.[0]?.path), '["tools","wsl"]')
 eq('a toggle writes the requested value', setOp?.batch?.[0]?.value, false)
 eq('the write is fenced by the snapshot revision', setOp?.revision, 7)
-// The reset control only exists on an overridden row; `user` marks this one.
-for (const node of found) {
-  const onClick = node.props?.onClick
-  if (typeof onClick !== 'function') continue
-  try {
-    await onClick({ preventDefault() {}, stopPropagation() {} })
-  } catch {
-    // A control that wants a different event shape is not under test here.
-  }
+// Clearing overrides lives in ONE place, not on every row: the panel renders a
+// single control that unsets every overridden path in one revision-fenced write.
+const resetControls = found.filter((node) => node.props?.children === '全部恢复默认')
+eq('the panel offers exactly one reset control', resetControls.length, 1)
+eq('the reset wording is not repeated on the rows', (rendered.match(/恢复默认/g) ?? []).length, 1)
+let resetSettled = null
+try {
+  resetSettled = await resetControls[0].props.onClick({ preventDefault() {}, stopPropagation() {} })
+} catch (error) {
+  check('the reset control settles', false, String(error))
 }
-check('an overridden row offers a reset that clears the override',
-  ops.some((entry) => entry.batch?.[0]?.op === 'unset' && JSON.stringify(entry.batch[0].path) === '["tools","wsl"]'),
-  JSON.stringify(ops))
+const unsetBatches = ops.filter((entry) => entry.batch?.some((op) => op.op === 'unset'))
+eq('the reset sends one batch, not one write per row', unsetBatches.length, 1)
+const unsetPaths = (unsetBatches[0]?.batch ?? [])
+  .filter((op) => op.op === 'unset')
+  .map((op) => op.path.join('.'))
+  .sort()
+eq('the batch covers every overridden path', unsetPaths.join(','), 'dangerGuard,tools.wsl')
+eq('the reset is fenced by the snapshot revision', unsetBatches[0]?.revision, 7)
+check('the reset reports success', resetSettled === true, String(resetSettled))
 
 console.log('\ndegradation')
 for (const [name, broken] of [
