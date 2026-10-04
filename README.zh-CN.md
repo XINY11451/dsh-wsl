@@ -116,6 +116,31 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 `job_output`/`job_kill` 读回它的依据，也是其他会话读不到它的围栏；exec 里没有 agent 时
 任务则是无主的。
 
+## 左侧栏的 WSL 面板
+
+插件带了一个小的客户端半：桌面版左侧栏里多一个 **WSL** 入口，面板里每个功能一个开关，每个开关
+配一行说明。
+
+| 开关 | 管什么 |
+|---|---|
+| `wsl` 命令执行 | 是否注册 `wsl` 工具 |
+| `wsl-path` 路径转换 | 是否注册 `wsl-path` 工具 |
+| `wsl-env` 能力体检 | 是否注册 `wsl-env` 工具 |
+| 后台任务 | `wsl` 是否接受 `runInBackground` |
+| 自动转换路径 | 每次调用的 `translatePaths` 默认值 |
+| 默认跟随会话工作区 | 未传 `workdir` 时从会话目录开始，而不是 `~` |
+| 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
+
+面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
+或用环境变量设。优先级由 `lib/config.js` 定：**插件配置 > 环境变量 > 内置默认值**；开关停在默认值时
+下层说了算 —— 这正是"从没打开过面板的人，`DSH_WSL_WORKDIR=session` 依然生效"的原因。
+
+**改动在下次启动 DSH 后生效**：宿主每次挂载只读一次该配置，面板里也写着这句。发行版与超时属于"值"
+而不是"功能"：在 patch 里或用 `DSH_WSL_DISTRO` / `DSH_WSL_TIMEOUT_MS` 设置，面板只显示当前生效值。
+
+这个设置界面需要 `@deepseek-ai/schemastery`（插件把它声明为可选 peer 依赖）：没有它三个工具照常按
+默认值工作，只是没有面板。
+
 ## 可选：在侧边栏开一个 WSL 终端
 
 桌面版侧边栏终端可以开 WSL 而不是 Windows shell。这是**可选**的 —— 装插件**不会**改你终端默认

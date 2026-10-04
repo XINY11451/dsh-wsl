@@ -238,7 +238,7 @@ function makeJobs() {
   }
 }
 
-function makeCtx(shim, { jobs, shellEnv } = {}) {
+function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
   const tools = {}
   const ctx = {
     tools: { register(tool) { tools[tool.name] = tool } },
@@ -246,7 +246,9 @@ function makeCtx(shim, { jobs, shellEnv } = {}) {
     // Optional services: the plugin must work when these return undefined.
     get: (name) => (name === 'jobs' ? jobs : name === 'shellEnv' ? shellEnv : undefined),
   }
-  apply(ctx)
+  // `settings` is the plugin's own configuration as the composition resolves it
+  // against the Config schema — what the sidebar panel writes.
+  apply(ctx, settings)
   return tools
 }
 
@@ -386,6 +388,28 @@ async function unitTests() {
   eq('DSH_WSL_DISTRO pins a distro', resolveConfig({ DSH_WSL_DISTRO: ' Debian ' }).distro, 'Debian')
   eq('a blank DSH_WSL_DISTRO means the system default', resolveConfig({ DSH_WSL_DISTRO: '   ' }).distro, null)
   eq('the default workdir is the Linux home', resolveConfig({}).defaultWorkdir, '~')
+  // The plugin's own configuration (written by the sidebar panel) is the most
+  // specific layer, but a switch left at its default must let the environment
+  // through: a user who never opened the panel still gets DSH_WSL_WORKDIR.
+  eq('a panel switch beats the environment for the workdir',
+    resolveConfig({ DSH_WSL_WORKDIR: 'home' }, { startInSessionWorkspace: true }).defaultWorkdir, null)
+  eq('an untouched switch leaves DSH_WSL_WORKDIR in charge',
+    resolveConfig({ DSH_WSL_WORKDIR: 'session' }, { startInSessionWorkspace: false }).defaultWorkdir, null)
+  eq('a panel distro beats DSH_WSL_DISTRO',
+    resolveConfig({ DSH_WSL_DISTRO: 'Debian' }, { distro: 'Ubuntu-22.04' }).distro, 'Ubuntu-22.04')
+  eq('a blank panel distro falls back to the environment',
+    resolveConfig({ DSH_WSL_DISTRO: 'Debian' }, { distro: '  ' }).distro, 'Debian')
+  eq('a panel timeout beats DSH_WSL_TIMEOUT_MS',
+    resolveConfig({ DSH_WSL_TIMEOUT_MS: '5000' }, { timeoutMs: 60_000 }).commandTimeoutMs, 60_000)
+  eq('a zero panel timeout means "not configured"',
+    resolveConfig({ DSH_WSL_TIMEOUT_MS: '5000' }, { timeoutMs: 0 }).commandTimeoutMs, 5_000)
+  eq('switches default to on', resolveConfig({}, {}).dangerGuard, true)
+  eq('a non-boolean switch falls back instead of failing the mount',
+    resolveConfig({}, { backgroundJobs: 'no' }).backgroundJobs, true)
+  eq('the tool switches default to all three on',
+    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true')
+  eq('a partial tools object leaves the other switches alone',
+    resolveConfig({}, { tools: { env: false } }).tools.env, false)
   eq('workdir "home" spells the tilde', resolveConfig({ DSH_WSL_WORKDIR: 'home' }).defaultWorkdir, '~')
   eq('workdir "session" means the process cwd', resolveConfig({ DSH_WSL_WORKDIR: 'session' }).defaultWorkdir, null)
   eq('any other workdir is an explicit default path',
@@ -593,6 +617,45 @@ async function toolTests(tools, shim) {
     allowDangerous: true,
   })
   eq('allowDangerous executes the command', allowed.stdout.trim(), 'survived')
+
+  // The sidebar panel's switches. Each one is read once, at mount, so the mount
+  // is the unit under test and every case builds its own ctx. Every case pairs
+  // with a control mount on the default switch: an assertion that only proves
+  // "the command ran" would pass just as well if the switch were ignored.
+  console.log('\nwsl: plugin settings gates')
+  const guardOffTools = makeCtx(shim, { settings: { dangerGuard: false } })
+  const unguardedResult = await guardOffTools.wsl.execute({
+    command: 'rm -r -f /tmp/dsh-wsl-unguarded; echo ran',
+    description: 'guard off',
+  })
+  eq('turning the guard off lets a destructive command run', unguardedResult.stdout.trim(), 'ran')
+  await rejects('the control mount still refuses the same command', () => tools.wsl.execute({
+    command: 'rm -r -f /tmp/dsh-wsl-unguarded; echo ran', description: 'guard on',
+  }), /refused a destructive command/)
+
+  const noBackgroundTools = makeCtx(shim, { jobs, settings: { backgroundJobs: false } })
+  await rejects('the background switch is enforced even where jobs exist', () => noBackgroundTools.wsl.execute({
+    command: 'echo x', description: 'background off', runInBackground: true,
+  }), /background jobs are switched off/)
+  const backgroundTools = makeCtx(shim, { jobs })
+  const startedJob = await backgroundTools.wsl.execute({
+    command: 'echo bg-switch', description: 'background on', runInBackground: true,
+  })
+  check('the control mount still starts a job', typeof startedJob.jobId === 'string', JSON.stringify(startedJob.jobId))
+
+  const verbatimTools = makeCtx(shim, { settings: { translatePaths: false } })
+  const keptVerbatim = await verbatimTools.wsl.execute({
+    command: "echo 'C:\\keep\\me'", description: 'translation off',
+  })
+  eq('the translation switch keeps a Windows path verbatim', keptVerbatim.stdout.trim(), 'C:\\keep\\me')
+  const rewrittenByDefault = await tools.wsl.execute({ command: "echo 'C:\\keep\\me'", description: 'translation on' })
+  eq('the control mount rewrites it', rewrittenByDefault.stdout.trim(), '/mnt/c/keep/me')
+
+  const wslOnlyTools = makeCtx(shim, { settings: { tools: { wsl: true, path: false, env: false } } })
+  eq('a tool switch removes exactly that tool', Object.keys(wslOnlyTools).sort().join(','), 'wsl')
+  const allOffTools = makeCtx(shim, { settings: { tools: { wsl: false, path: false, env: false } } })
+  eq('all three switches off register nothing', Object.keys(allOffTools).length, 0)
+  eq('the control mount registers all three', Object.keys(tools).sort().join(','), 'wsl,wsl-env,wsl-path')
 
   console.log('\nwsl: timeout')
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })

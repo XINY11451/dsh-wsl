@@ -134,6 +134,38 @@ A background job is owned by the calling session (`owner: exec.agent.id`), which
 is what lets the model read it back with `job_output`/`job_kill` and what keeps
 other sessions out; an execution with no agent starts the job unowned.
 
+## The WSL panel (left sidebar)
+
+The plugin ships a small client half: a **WSL** entry in the desktop app's left
+sidebar, whose panel carries one switch per feature, each with a one-line
+explanation.
+
+| Switch | What it controls |
+|---|---|
+| `wsl` 命令执行 | registers the `wsl` tool |
+| `wsl-path` 路径转换 | registers the `wsl-path` tool |
+| `wsl-env` 能力体检 | registers the `wsl-env` tool |
+| 后台任务 | whether `wsl` accepts `runInBackground` |
+| 自动转换路径 | the default for the per-call `translatePaths` |
+| 默认跟随会话工作区 | start in the session's directory instead of `~` when `workdir` is omitted |
+| 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
+
+The panel edits the plugin's own configuration, so the same values can be written
+by hand (`- id: tool-wsl` with `config:` in a profile patch) or by environment
+variables. `lib/config.js` owns the precedence — **plugin configuration, then the
+environment, then the built-in defaults** — and a switch left at its default lets
+the layer below decide, which is why `DSH_WSL_WORKDIR=session` keeps working for
+someone who never opened the panel.
+
+**A change takes effect at the next DSH start**: the host reads this configuration
+once per mount, and the panel says so. Distro and timeout are values rather than
+features — set them in the patch or with `DSH_WSL_DISTRO` / `DSH_WSL_TIMEOUT_MS`,
+and the panel shows what is currently in effect.
+
+The settings surface needs `@deepseek-ai/schemastery`, which the plugin declares as
+an optional peer dependency: without it the three tools still run on their defaults
+and only the panel is missing.
+
 ## Optional: a WSL terminal in the sidebar
 
 The desktop app's sidebar terminal can open WSL instead of a Windows shell. It is

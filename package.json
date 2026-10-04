@@ -1,9 +1,23 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "1.9.1",
-  "description": "Run Linux commands from Windows through WSL, essentially matching a native Linux DSH for command execution: background jobs, stdin, path translation, a destructive-command guard and a WSL capability report. Optionally gives the desktop app's sidebar terminal a WSL shell. WSL calls run below the DSH sandbox, and a project on a Windows drive keeps Windows filesystem semantics.",
+  "version": "1.10.0",
+  "description": "Run Linux commands from Windows through WSL, essentially matching a native Linux DSH for command execution: background jobs, stdin, path translation, a destructive-command guard and a WSL capability report. A left-sidebar panel switches each capability on or off, each with a one-line explanation, and an opt-in patch gives the desktop app's sidebar terminal a WSL shell. WSL calls run below the DSH sandbox, and a project on a Windows drive keeps Windows filesystem semantics.",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -36,7 +50,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/smoke.mjs",
+    "test": "node test/smoke.mjs && node test/client.mjs",
     "test:real": "node test/smoke.mjs --real && node test/real-seam.mjs",
     "sync": "node scripts/sync-profile.mjs"
   },
@@ -47,6 +61,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
     }
   }
 }
