@@ -116,11 +116,14 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 `job_output`/`job_kill` 读回它的依据，也是其他会话读不到它的围栏；exec 里没有 agent 时
 任务则是无主的。
 
-## 在侧边栏开一个 WSL 终端
+## 可选：在侧边栏开一个 WSL 终端
 
-装了这个插件，桌面版侧边栏终端就多出一个 **WSL** shell：插件的 `cordis.patch.yml` 覆盖组合里的
-`terminal-controller` 行，而该行配置的 shell 会排在**第一位**并成为默认；它由 `shellCandidates`
-发现的 `powershell`/`cmd`/`bash` 等仍然可选，所以「新建终端」里 WSL 与它们并列。
+桌面版侧边栏终端可以开 WSL 而不是 Windows shell。这是**可选**的 —— 装插件**不会**改你终端默认
+开什么 —— 启用用的 patch 随包提供：[`extras/terminal-wsl.patch.yml`](extras/terminal-wsl.patch.yml)。
+
+启用方式：把里面的条目复制进你自己 profile 的 patch 层
+（`$DSH_HOME/profiles/<profile>/cordis.patch.yml`）；命令行启动也可以改成
+`--patch <已安装文件路径>`。**下次启动应用时生效。**
 
 ```yaml
 - id: terminal-controller
@@ -131,23 +134,15 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
       args: ['-e', 'bash', '-l']
 ```
 
-- **不锁定发行版**：`wsl.exe` 跟随系统默认，与工具在未设 `DSH_WSL_DISTRO` 时的规则一致。
+- 「新建终端」的列表来自组合里的 `terminal-controller` 行：它把配置的 `shell` 排在最前，同时保留
+  它发现的 `powershell`/`cmd`/`bash` 等可选。那个选择列表属于核心 UI，所以**按 id 覆盖该行**是
+  受支持的入口 —— 这也是它没法做成普通插件条目的原因。
+- **不锁定发行版**：`wsl.exe` 跟随系统默认，与工具在未设 `DSH_WSL_DISTRO` 时的规则一致。要锁定就
+  在 `args` 里加 `-d <名字>`。
 - 会话工作区是 Windows 路径，`wsl.exe` 会自动翻译，因此终端像 Windows shell 一样落在
   `/mnt/<盘>/…`；而且是**真 PTY**（`xterm-256color`），全屏程序可用。
-- **要锁定发行版或换默认 shell**，在更靠后的 patch 层里重述该行即可 —— profile 自己的
-  `cordis.patch.yml` 优先于本组合包：
-
-  ```yaml
-  - id: terminal-controller
-    config:
-      shell:
-        path: 'C:\Windows\System32\wsl.exe'
-        name: WSL
-        args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
-  ```
-
-  按 id 的 patch 会**整段替换**该行 config，其他设置要一并重述。
-- **下次启动应用时生效。**
+- 按 id 的 patch 会**整段替换**该行 config，你之前在该行上设过的东西（终端上限、scrollback、
+  自定义 `shellCandidates`）要一并重述。
 
 ## `wsl` 参数
 

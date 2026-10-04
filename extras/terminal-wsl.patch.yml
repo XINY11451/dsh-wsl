@@ -1,0 +1,34 @@
+# OPTIONAL — give the desktop app's sidebar terminal a WSL shell.
+#
+# This is deliberately NOT part of the bundle patch: installing a tool plugin must
+# not change which shell someone's terminals open by default. To opt in, copy the
+# entry below into the profile's own patch layer
+# (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`), or hand this file to a CLI
+# launch with `--patch <path to this file>`. It applies at the next app start.
+#
+# Why an id-targeted override: the sidebar's 新建终端 list is built from the
+# composed `terminal-controller` row, which discovers shells from
+# `shellCandidates` and lists the configured `shell` first. A candidate entry
+# cannot do it — a shell found by name gets `-i` appended, and `wsl.exe -i` is a
+# hard error. The picker itself is core UI, so a plugin cannot add an entry to it;
+# overriding the row is the supported way in.
+#
+# The path is absolute because a configured shell that fails to resolve makes every
+# new terminal fail, not just this one, and wsl.exe ships with Windows at a fixed
+# location whether or not a distribution is installed yet.
+#
+# No distribution is pinned, so `wsl.exe` follows the system default — the same
+# rule the tools use when `DSH_WSL_DISTRO` is unset. Add `-d <name>` to `args` to
+# pin one.
+#
+# An id-targeted patch replaces that row's whole config, so anything a layer below
+# set on it (terminal limits, scrollback, a custom `shellCandidates` list) falls
+# back to its schema default; only `shell` is set here on purpose. Never add
+# `disabled:` — that would switch the whole terminal feature off instead of
+# adjusting it.
+- id: terminal-controller
+  config:
+    shell:
+      path: 'C:\Windows\System32\wsl.exe'
+      name: WSL
+      args: ['-e', 'bash', '-l']

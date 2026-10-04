@@ -911,9 +911,10 @@ async function toolTests(tools, shim) {
   }
   check('total catalog cost within budget', catalog <= 3_800, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
 
-  // The bundle patch carries two independent things: the inserted tool row, and a
-  // config override that gives the desktop sidebar terminal a WSL shell. Assert
-  // each on its own terms rather than counting `- id:` lines across both.
+  // The bundle patch must stay minimal: installing a tool plugin must not decide
+  // which shell someone's terminals open. Pointing the desktop sidebar terminal at
+  // WSL is opt-in and ships as extras/terminal-wsl.patch.yml, so assert both
+  // halves — that this file leaves the terminal alone, and that the opt-in works.
   console.log('\nbundle manifest and patch entry')
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
@@ -922,12 +923,13 @@ async function toolTests(tools, shim) {
   const patchFile = resolve(packageRoot, patchRel ?? '')
   check('the declared patch file exists', patchRel !== undefined && existsSync(patchFile), patchFile)
   const patchText = readFileSync(patchFile, 'utf8')
-
-  const overrideAt = patchText.indexOf('- id: terminal-controller')
-  const insertBlock = overrideAt === -1 ? patchText : patchText.slice(0, overrideAt)
-  check('the patch has an insert list', insertBlock.includes('- insert:'))
-  check('the patch inserts exactly one row', (insertBlock.match(/^\s*- id:/gm) ?? []).length === 1)
-  const entryName = /^\s*name:\s*'([^']+)'\s*$/m.exec(insertBlock)?.[1]
+  check(
+    'the bundle patch does not choose the terminal shell',
+    !patchText.includes('terminal-controller'),
+    'pointing the sidebar terminal at WSL belongs in extras/, not in the bundle patch',
+  )
+  check('the patch inserts exactly one row', (patchText.match(/^\s*- id:/gm) ?? []).length === 1)
+  const entryName = /^\s*name:\s*'([^']+)'\s*$/m.exec(patchText)?.[1]
   check(
     'the patch entry name is folder-independent',
     typeof entryName === 'string' && entryName.startsWith('./'),
@@ -939,34 +941,34 @@ async function toolTests(tools, shim) {
     String(entryName),
   )
 
-  // The override half: it must address a real composed row by id, must not switch
+  // The optional half: it must address a real composed row by id, must not switch
   // that row off (that would take the terminal feature away rather than adjust it),
   // and must point at a shell that exists.
-  const overrideBlock = overrideAt === -1 ? '' : patchText.slice(overrideAt)
+  console.log('\noptional sidebar-terminal patch')
+  check('the manifest ships the extras directory', (manifest.files ?? []).includes('extras'), JSON.stringify(manifest.files))
+  const extrasFile = resolve(packageRoot, 'extras/terminal-wsl.patch.yml')
+  check('the optional patch exists', existsSync(extrasFile), 'extras/terminal-wsl.patch.yml')
+  const extras = existsSync(extrasFile) ? readFileSync(extrasFile, 'utf8') : ''
   check(
-    'the override targets the sidebar terminal row',
-    /^\s*- id:\s*terminal-controller\s*$/m.test(overrideBlock),
+    'it targets the sidebar terminal row',
+    /^\s*- id:\s*terminal-controller\s*$/m.test(extras),
     'a wrong id would silently do nothing',
   )
   check(
-    'the override never disables the row it targets',
-    !/^\s*disabled:/.test(overrideBlock),
+    'it never disables the row it targets',
+    !/^\s*disabled:/.test(extras),
     'disabling terminal-controller would remove the whole sidebar terminal',
   )
-  const shellPath = /^\s*path:\s*'([^']+)'\s*$/m.exec(overrideBlock)?.[1]
+  const shellPath = /^\s*path:\s*'([^']+)'\s*$/m.exec(extras)?.[1]
+  check('it names the WSL launcher', typeof shellPath === 'string' && /wsl\.exe$/i.test(shellPath), String(shellPath))
   check(
-    'the override names the WSL launcher',
-    typeof shellPath === 'string' && /wsl\.exe$/i.test(shellPath),
-    String(shellPath),
-  )
-  check(
-    'the override shell exists on a Windows host',
+    'its shell exists on a Windows host',
     process.platform !== 'win32' || (typeof shellPath === 'string' && existsSync(shellPath)),
     String(shellPath),
   )
   check(
-    'the override does not pin a distribution',
-    !/^\s*args:.*-d/m.test(overrideBlock),
+    'it does not pin a distribution',
+    !/^\s*args:.*-d/m.test(extras),
     'pinning one would break machines with a different default distro',
   )
 }

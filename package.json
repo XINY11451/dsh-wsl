@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "1.9.0",
-  "description": "Run Linux commands from Windows through WSL, essentially matching a native Linux DSH for command execution: background jobs, stdin, path translation, a destructive-command guard and a WSL capability report. WSL calls run below the DSH sandbox, and a project on a Windows drive keeps Windows filesystem semantics.",
+  "version": "1.9.1",
+  "description": "Run Linux commands from Windows through WSL, essentially matching a native Linux DSH for command execution: background jobs, stdin, path translation, a destructive-command guard and a WSL capability report. Optionally gives the desktop app's sidebar terminal a WSL shell. WSL calls run below the DSH sandbox, and a project on a Windows drive keeps Windows filesystem semantics.",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
@@ -30,6 +30,7 @@
     "README.md",
     "README.zh-CN.md",
     "PUBLISHING.md",
+    "extras",
     "screenshots.json",
     "assets",
     "LICENSE"

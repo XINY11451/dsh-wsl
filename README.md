@@ -134,13 +134,16 @@ A background job is owned by the calling session (`owner: exec.agent.id`), which
 is what lets the model read it back with `job_output`/`job_kill` and what keeps
 other sessions out; an execution with no agent starts the job unowned.
 
-## A WSL terminal in the sidebar
+## Optional: a WSL terminal in the sidebar
 
-Installing this plugin also gives the desktop app's sidebar terminal a **WSL**
-shell. `cordis.patch.yml` overrides the composed `terminal-controller` row, whose
-configured shell is listed **first** and selected by default; the shells that row
-discovers (`powershell`, `cmd`, `bash`, …) stay selectable, so 新建终端 offers WSL
-next to them.
+The desktop app's sidebar terminal can open WSL instead of a Windows shell. It is
+**opt-in** — installing this plugin does not change which shell your terminals
+open — and the patch that enables it ships in the package as
+[`extras/terminal-wsl.patch.yml`](extras/terminal-wsl.patch.yml).
+
+To turn it on, copy that entry into your profile's own patch layer
+(`$DSH_HOME/profiles/<profile>/cordis.patch.yml`); a CLI launch can instead pass
+`--patch <path to the installed file>`. It applies at the next app start.
 
 ```yaml
 - id: terminal-controller
@@ -151,26 +154,19 @@ next to them.
       args: ['-e', 'bash', '-l']
 ```
 
+- The sidebar's 新建终端 list is built from the composed `terminal-controller`
+  row: it lists the configured `shell` first and keeps the shells it discovers
+  (`powershell`, `cmd`, `bash`, …) selectable. The picker is core UI, so overriding
+  that row is the supported way in — which is also why this cannot be a plain
+  plugin entry.
 - No distribution is pinned, so `wsl.exe` follows the system default — the same
-  rule the tools use when `DSH_WSL_DISTRO` is unset.
+  rule the tools use when `DSH_WSL_DISTRO` is unset. Add `-d <name>` to `args` to
+  pin one.
 - The session workspace is a Windows path that `wsl.exe` translates, so the
   terminal opens in `/mnt/<drive>/…` exactly like the Windows shells do; and it is
   a real PTY (`xterm-256color`), so full-screen programs work.
-- **Pinning a distribution, or choosing a different default, is a later patch
-  layer** — a profile's own `cordis.patch.yml` wins over this bundle:
-
-  ```yaml
-  - id: terminal-controller
-    config:
-      shell:
-        path: 'C:\Windows\System32\wsl.exe'
-        name: WSL
-        args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
-  ```
-
-  An id-targeted patch replaces that row's whole config, so restate anything else
-  you had set on it.
-- Applies at the next app start.
+- An id-targeted patch replaces that row's whole config, so restate anything else
+  you had set on it (terminal limits, scrollback, a custom `shellCandidates` list).
 
 ## `wsl` parameters
 
