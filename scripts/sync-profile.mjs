@@ -26,8 +26,9 @@ if (!existsSync(dirname(target))) {
   throw new Error(`profile node_modules not found: ${dirname(target)} — is the profile path right?`)
 }
 
-// Everything the plugin needs at runtime; deliberately not the tests or assets.
-const entries = ['index.js', 'package.json', 'cordis.patch.yml', 'README.md', 'README.zh-CN.md', 'LICENSE', 'lib']
+// Everything the plugin needs at runtime, plus the optional patches a user may
+// copy into their own layer; deliberately not the tests or assets.
+const entries = ['index.js', 'package.json', 'cordis.patch.yml', 'extras', 'README.md', 'README.zh-CN.md', 'LICENSE', 'lib']
 
 for (const entry of entries) {
   const from = join(packageRoot, entry)
