@@ -160,6 +160,36 @@ package. "Not published" verdicts are re-probed daily, so a freshly published
 version can take a day to appear; when it does, `install` switches from the
 tarball URL to `dsh plugin --profile web add dsh-wsl-tool`.
 
+## Market screenshots
+
+The catalog's `screenshots` array is **generated from this repository**, not written
+by hand: `screenshots.json` lists repo-relative paths and the site turns each one
+into `https://raw.githubusercontent.com/XINY11451/dsh-wsl/HEAD/<path>`. That has two
+consequences worth remembering:
+
+- **Changing a preview is a commit here, not a listing PR.** The listing file's
+  hand-written keys are `url`, `name`, `category`, `tarball` and `description`;
+  everything else (including `screenshots`) is generated and must not be written by
+  hand. Only the description needs a PR against `awesome-dsh-plugin`.
+- **Replacing a file in place refreshes the preview at the same URL**, which is why
+  `assets/screenshot-1.png` keeps its name across redesigns. GitHub's raw endpoint
+  caches, so a stale image can survive a few minutes to a day.
+
+The current preview is rendered from `assets/market-preview.html` (the editable
+source of truth) with headless Edge:
+
+```powershell
+& 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new `
+  --disable-gpu --hide-scrollbars --force-device-scale-factor=2 `
+  --window-size=1280,800 --virtual-time-budget=3000 `
+  --user-data-dir="$env:TEMP\edge-shot" `
+  --screenshot="assets\screenshot-1.png" "file:///$PWD/assets/market-preview.html"
+```
+
+It renders 2560×1600 (1280×800 at 2×) in a few seconds with no browser window. The
+`--user-data-dir` keeps it away from the user's real Edge profile. Edit the HTML,
+re-run, and commit the PNG: no build step, no design tool.
+
 ## Things that bite
 
 - **A tag event runs the workflow from the tag's commit.** To change the
