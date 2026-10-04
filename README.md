@@ -134,6 +134,31 @@ A background job is owned by the calling session (`owner: exec.agent.id`), which
 is what lets the model read it back with `job_output`/`job_kill` and what keeps
 other sessions out; an execution with no agent starts the job unowned.
 
+## A WSL terminal in the sidebar
+
+The desktop app's sidebar terminal picks its shell from the composed
+`terminal-controller` entry, so a WSL shell is a **profile patch, not plugin
+code**: that picker is core UI, and no plugin can add an entry to it. Add this to
+`$DSH_HOME/profiles/<profile>/cordis.patch.yml`:
+
+```yaml
+- id: terminal-controller
+  name: "@deepseek-ai/dsh-api-terminal-controller"
+  config:
+    shell:
+      path: 'C:\Windows\System32\wsl.exe'
+      name: WSL
+      args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+```
+
+The configured shell is listed **first** and becomes the default; the shells
+discovered from `shellCandidates` (`powershell`, `cmd`, `bash`, …) stay
+selectable. Only `shell` is set, because an id-targeted patch replaces the whole
+config, so every other field falls back to its schema default. The session
+workspace is a Windows path that `wsl.exe` translates, so the terminal opens in
+`/mnt/<drive>/…` exactly like the Windows shells do. Drop `-d …` to follow the
+system default distribution. It applies at the next app start.
+
 ## `wsl` parameters
 
 | Param | Required | Type | Notes |

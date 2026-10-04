@@ -116,6 +116,28 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 `job_output`/`job_kill` 读回它的依据，也是其他会话读不到它的围栏；exec 里没有 agent 时
 任务则是无主的。
 
+## 在侧边栏开一个 WSL 终端
+
+桌面版侧边栏终端的 shell 取自组合里的 `terminal-controller` 条目，所以这是**配置、不是插件代码**
+——那个选择列表属于核心 UI，插件无法往里加条目。把下面这段加到
+`$DSH_HOME/profiles/<profile>/cordis.patch.yml`：
+
+```yaml
+- id: terminal-controller
+  name: "@deepseek-ai/dsh-api-terminal-controller"
+  config:
+    shell:
+      path: 'C:\Windows\System32\wsl.exe'
+      name: WSL
+      args: ['-d', 'Ubuntu-22.04', '-e', 'bash', '-l']
+```
+
+配置的 shell 会排在**第一位**并成为默认；由 `shellCandidates` 发现的
+`powershell`/`cmd`/`bash` 等仍然可选。这里只设了 `shell`：按 id 的 patch 会**整段替换**该行的
+config，其余字段各自回到 schema 默认值。会话工作区是 Windows 路径，`wsl.exe` 会自动翻译，因此终端
+会像 Windows shell 一样落在 `/mnt/<盘>/…`；把 `-d …` 去掉即跟随系统默认发行版。
+**下次启动应用时生效。**
+
 ## `wsl` 参数
 
 | 参数 | 必填 | 类型 | 说明 |
