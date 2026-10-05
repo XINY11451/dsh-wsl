@@ -130,7 +130,8 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | `wsl-env` 能力体检 | 是否注册 `wsl-env` 工具 |
 | 后台任务 | `wsl` 是否接受 `runInBackground` |
 | 自动转换路径 | 每次调用的 `translatePaths` 默认值 |
-| 默认跟随会话工作区 | 未传 `workdir` 时从会话目录开始，而不是 `~` |
+| 默认跟随会话工作区 | 未传 `workdir` 时从会话目录开始，而不是 `~`。**默认开**：关掉的话，agent 写的相对路径都会落进 Linux 家目录 —— 那儿在资源管理器里看不见，还会撑大 WSL 磁盘镜像 |
+| Linux 默认工作目录 | 未传 `workdir` 时使用的固定 Linux 目录（如 `/mnt/d/project`）。填了就优先于上面的开关；清空则回到跟随会话 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）

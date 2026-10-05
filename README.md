@@ -149,7 +149,8 @@ explanation.
 | `wsl-env` 能力体检 | registers the `wsl-env` tool |
 | 后台任务 | whether `wsl` accepts `runInBackground` |
 | 自动转换路径 | the default for the per-call `translatePaths` |
-| 默认跟随会话工作区 | start in the session's directory instead of `~` when `workdir` is omitted |
+| 默认跟随会话工作区 | start in the session's directory instead of `~` when `workdir` is omitted. **On by default**: with it off, every relative path an agent writes lands in the Linux home, which is invisible from Explorer and grows the WSL disk image |
+| Linux 默认工作目录 | a fixed Linux directory (for example `/mnt/d/project`) used when `workdir` is omitted. Filling it in wins over the switch above; clearing it goes back to following the session |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
 
 The panel edits the plugin's own configuration, so the same values can be written
