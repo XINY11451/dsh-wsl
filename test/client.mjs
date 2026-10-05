@@ -225,15 +225,16 @@ for (const mention of ['一次一个全新 shell', 'systemd', '内置 job 工具
 check('the destructive-guard switch warns in its own tooltip',
   switches.some((node) => node.props?.label === '危险命令守卫' && /有风险/.test(String(node.props?.title))),
   JSON.stringify(switches.map((node) => node.props?.title)))
-// The patch snippet is gone from the panel on purpose: it is a maintainer recipe,
-// not something a user of the plugin has to read. What remains is one pointer line
-// at the end of the optional rows, and it must say that nothing is enabled by
-// default — an installed plugin must not silently point the sidebar terminal at WSL.
-check('the sidebar-terminal patch snippet is no longer rendered',
+// The panel must not carry the terminal recipe at all: which shell the sidebar's
+// 新建终端 opens is the platform's business, not something an installed plugin
+// advertises. The recipe lives in extras/terminal-wsl.patch.yml and the README.
+check('the sidebar-terminal patch snippet is not rendered',
   !rendered.includes('- id: terminal-controller') && !rendered.includes('wsl.exe\''))
-check('the optional sidebar terminal is named as opt-in',
-  rendered.includes('侧边栏终端') && /默认不开|不会默认/.test(rendered),
+check('the panel never mentions the sidebar terminal at all',
+  !rendered.includes('侧边栏终端') && !rendered.includes('terminal-controller'),
   rendered.slice(0, 200))
+check('the feedback entry carries no explanation paragraph',
+  !rendered.includes('由插件自己读出下面的内容'), rendered.slice(0, 200))
 
 console.log('\nconfiguration writes')
 const wslSwitch = switches.find((node) => node.props?.label === 'wsl 命令执行')
