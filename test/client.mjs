@@ -337,6 +337,12 @@ context.fetch = (url) => {
       node: 'v24.0.0',
       platform: 'win32',
       arch: 'x64',
+      dsh: { name: '@deepseek-ai/dsh-desktop', version: '0.2.0-rc.2' },
+      wsl: {
+        defaultDistro: 'Ubuntu-22.04',
+        kernel: 'Linux 6.6.87.2-microsoft-standard-WSL2 x86_64',
+        capabilities: ['systemd ✓', 'docker ✗'],
+      },
       config: { tools: { wsl: true }, distro: 'Ubuntu-22.04', commandTimeoutMs: 600000 },
     }),
   })
@@ -353,11 +359,17 @@ for (const [name, needle] of [
   ['the version read from the manifest', 'dsh-wsl-tool 9.9.9'],
   ['the repository', 'https://github.com/XINY11451/dsh-wsl.git'],
   ['the runtime', 'Node v24.0.0'],
+  ['the DSH build the plugin runs inside', '- DSH：0.2.0-rc.2（@deepseek-ai/dsh-desktop）'],
+  ['the default distribution', 'Ubuntu-22.04（默认发行版）'],
+  ['the kernel', '内核 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64'],
+  ['the capability flags', 'WSL 能力：systemd ✓　docker ✗'],
   ['the effective distro', 'Ubuntu-22.04'],
   ['the effective timeout', '- 命令超时 timeoutMs：600000 毫秒'],
 ]) {
   check(`the Host answer puts ${name} in the block`, hostBlock.includes(needle), hostBlock.slice(0, 200))
 }
+check('a readable block never claims anything is unreadable',
+  !hostBlock.includes('未能读取'), hostBlock.slice(0, 200))
 
 console.log('\ndegradation')
 for (const [name, broken] of [
