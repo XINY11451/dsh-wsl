@@ -15,7 +15,7 @@ project kept on a Windows drive keeps **Windows** filesystem semantics — no PO
 permissions, case-insensitive names, no file-change notifications — at a fraction
 of the speed (see [Notes](#notes)).
 
-![The three tools, the left-sidebar switch panel, and the two limits](assets/screenshot-1.png)
+![The three tools, the left-sidebar switch panel, and the two limits](assets/market-preview.png)
 
 ## Tools
 
