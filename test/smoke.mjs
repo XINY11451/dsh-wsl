@@ -1676,6 +1676,16 @@ async function toolTests(tools, shim) {
     shipped.includes('lib') && existsSync(resolve(packageRoot, 'lib/client.js')),
     JSON.stringify(shipped))
 
+  // The DSH floor the MARKET reads. dsh-market fetches `<name>/latest` from the
+  // registry and compares `engines.dsh` (or `dsh.engines.dsh`) against the host
+  // version, so this field IS the entry's compatibility badge. The prerelease in
+  // the floor is load-bearing: `>=0.1.7` evaluates to FALSE on `0.1.7-rc.2`, the
+  // release the README says this plugin is verified against, and the market would
+  // then report the plugin as incompatible with its own verified host. DSH core
+  // ignores `engines` — it evaluates `peerDependencies` on `@deepseek-ai/dsh*` —
+  // so declaring it cannot get the plugin disabled.
+  eq('the manifest declares the DSH floor the market reads', manifest.engines?.dsh, '>=0.1.7-rc.2')
+
 
   // The optional half: it must address a real composed row by id, must not switch
   // that row off (that would take the terminal feature away rather than adjust it),

@@ -18,6 +18,9 @@
       "optional": true
     }
   },
+  "engines": {
+    "dsh": ">=0.1.7-rc.2"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
