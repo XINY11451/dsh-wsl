@@ -225,8 +225,15 @@ for (const mention of ['一次一个全新 shell', 'systemd', '内置 job 工具
 check('the destructive-guard switch warns in its own tooltip',
   switches.some((node) => node.props?.label === '危险命令守卫' && /有风险/.test(String(node.props?.title))),
   JSON.stringify(switches.map((node) => node.props?.title)))
-check('the sidebar-terminal snippet is shown verbatim',
-  rendered.includes("- id: terminal-controller") && rendered.includes("path: 'C:\\Windows\\System32\\wsl.exe'"))
+// The patch snippet is gone from the panel on purpose: it is a maintainer recipe,
+// not something a user of the plugin has to read. What remains is one pointer line
+// at the end of the optional rows, and it must say that nothing is enabled by
+// default — an installed plugin must not silently point the sidebar terminal at WSL.
+check('the sidebar-terminal patch snippet is no longer rendered',
+  !rendered.includes('- id: terminal-controller') && !rendered.includes('wsl.exe\''))
+check('the optional sidebar terminal is named as opt-in',
+  rendered.includes('侧边栏终端') && /默认不开|不会默认/.test(rendered),
+  rendered.slice(0, 200))
 
 console.log('\nconfiguration writes')
 const wslSwitch = switches.find((node) => node.props?.label === 'wsl 命令执行')
