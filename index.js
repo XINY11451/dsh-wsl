@@ -22,7 +22,10 @@
 // every switch below is consulted once, in `apply`.
 
 import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
+import { CAPABILITY_PROBE, capabilityLines, parseFacts } from './lib/diagnostics.js'
+import { parseDefaultDistro } from './lib/tools/wsl-env.js'
 import { resolveConfig } from './lib/config.js'
 import { pickSchemaBuilder } from './lib/schema.js'
 import { createRunner } from './lib/runner.js'
@@ -112,18 +115,86 @@ function readManifest() {
   return manifestCache
 }
 
+/** Only a DSH package counts as the application: never this plugin's own manifest. */
+const DSH_PACKAGE = /^@deepseek-ai\/dsh(?:-desktop|-desktop-host)?$/
+
+/**
+ * The DSH build this plugin is running inside, best effort.
+ *
+ * There is no environment variable for it — measured on the desktop build:
+ * `DSH_HOME`, `DSH_PROFILE`, `DSH_PROFILE_DIR`, `DSH_SESSION_ID`, `DSH_SHELL` and
+ * `DSH_WEB_URL`, and no version. So it is read from the application's own manifest
+ * instead: the host process is `<install>\DeepSeek Harness.exe`, whose asar sits at
+ * `resources/app.asar`, and the CLI entry in `argv[1]` leads into the same tree. Both
+ * routes are tried, and a candidate is accepted only when its manifest belongs to a
+ * DSH package, so a wrong guess degrades to "unreadable" rather than to a wrong
+ * version number.
+ */
+function dshVersion() {
+  const candidates = []
+  if (typeof process.execPath === 'string' && process.execPath !== '') {
+    const install = dirname(process.execPath)
+    candidates.push(join(install, 'resources', 'app.asar', 'package.json'))
+    candidates.push(join(install, 'resources', 'app', 'package.json'))
+  }
+  if (typeof process.argv[1] === 'string' && process.argv[1] !== '') {
+    let dir = dirname(process.argv[1])
+    for (let level = 0; level < 4; level += 1) {
+      candidates.push(join(dir, 'package.json'))
+      dir = dirname(dir)
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      const manifest = JSON.parse(readFileSync(candidate, 'utf8'))
+      if (typeof manifest?.name !== 'string' || !DSH_PACKAGE.test(manifest.name)) continue
+      if (typeof manifest.version === 'string' && manifest.version !== '') {
+        return { name: manifest.name, version: manifest.version }
+      }
+    } catch {
+      // Missing, unreadable or not JSON: the next candidate's turn.
+    }
+  }
+  return null
+}
+
+/**
+ * The WSL facts worth copying — the default distribution, the kernel and the
+ * capability flags that `wsl-env` reports. Probes run concurrently (one WSL round
+ * trip each) and every one of them is allowed to fail: a machine without WSL still
+ * produces the rest of the block, and the copied text never invents a value.
+ */
+async function wslFacts(runner, config) {
+  const attempt = (promise) => Promise.resolve(promise).catch(() => null)
+  const opts = { distro: undefined, timeoutMs: config.internalTimeoutMs, exec: undefined }
+  const [uname, list, caps] = await Promise.all([
+    attempt(runner.runWsl('uname -srm', opts)),
+    attempt(runner.spawnWsl(['wsl.exe', '-l', '-v'], config.internalTimeoutMs)),
+    attempt(runner.runWsl(CAPABILITY_PROBE, opts)),
+  ])
+  const facts = {
+    defaultDistro: list !== null && list.exitCode === 0 ? parseDefaultDistro(list.stdout) : null,
+    kernel: uname !== null && uname.exitCode === 0 ? uname.stdout.trim() : null,
+    capabilities: caps !== null && caps.exitCode === 0 ? capabilityLines(parseFacts(caps.stdout)) : null,
+  }
+  if (facts.defaultDistro === null && facts.kernel === null && facts.capabilities === null) return null
+  return facts
+}
+
 /**
  * This plugin's own facts, as the panel copies them out.
  *
  * The version comes from the manifest next to this file rather than from a string
  * written here, so a release cannot forget to update it. Everything else is the
  * effective configuration — the same resolved object the tools read — so the copied
- * block cannot disagree with the running plugin.
+ * block cannot disagree with the running plugin. `dsh` and `wsl` are the two facts
+ * the browser half cannot reach on its own, and both degrade to `null` rather than
+ * to a guess.
  *
  * No paths, host names or credentials: this route is served by the local web server
  * and a browser (or anything else on the machine) can fetch it.
  */
-function selfInfo(config) {
+async function selfInfo(config, runner) {
   const manifest = readManifest()
   const repository = typeof manifest?.repository?.url === 'string'
     ? manifest.repository.url.replace(/^git\+/, '')
@@ -135,6 +206,8 @@ function selfInfo(config) {
     node: process.version,
     platform: process.platform,
     arch: process.arch,
+    dsh: dshVersion(),
+    wsl: await wslFacts(runner, config),
     config: {
       tools: { ...config.tools },
       backgroundJobs: config.backgroundJobs,
@@ -177,18 +250,27 @@ export function apply(ctx, settings = {}) {
         const disposer = webServer.register({
           kind: 'exact',
           path: INFO_ROUTE,
-          handler: (request, response) => {
+          handler: async (request, response) => {
             if (request.method !== 'GET') {
               response.writeHead(405, { allow: 'GET' })
               response.end()
               return
+            }
+            let body
+            try {
+              // The WSL probes cost a few WSL round trips; they run concurrently and
+              // every one of them may fail without failing the request.
+              body = JSON.stringify(await selfInfo(config, runner))
+            } catch (error) {
+              console.warn('dsh-wsl-tool: reading self info failed', error)
+              body = JSON.stringify({ name: 'dsh-wsl-tool', version: null, dsh: null, wsl: null })
             }
             response.writeHead(200, {
               'content-type': 'application/json; charset=utf-8',
               // A copied block must describe this moment, not a cached one.
               'cache-control': 'no-store',
             })
-            response.end(JSON.stringify(selfInfo(config)))
+            response.end(body)
           },
         })
         if (typeof inner.effect === 'function') {

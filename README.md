@@ -170,10 +170,12 @@ and only the panel is missing.
 
 At the bottom of the panel there is one feedback entry, next to it a short
 submission guide, and — see [Feedback](#feedback) — a 「复制插件信息」 button. The
-button asks the host half on `/dsh-wsl-tool/info` for this package's own facts
-(name, version and repository read from its manifest, Node, platform) plus the
-effective configuration, and copies the result. A release never edits a version
-string in the client half to keep that block honest.
+button asks the host half on `/dsh-wsl-tool/info` for this plugin's own facts (name,
+version and repository read from its manifest, Node, platform), the DSH build it is
+running inside, and the WSL facts `wsl-env` reports (default distribution, kernel,
+capability flags) — then copies the result together with the effective
+configuration. Nothing here is a string a release has to remember to edit, and a
+probe that fails says so instead of inventing a value.
 
 ## Optional: a WSL terminal in the sidebar
 

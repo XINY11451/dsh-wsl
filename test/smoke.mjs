@@ -801,7 +801,9 @@ async function toolTests(tools, shim) {
   eq('the route matches exactly', infoRoute.kind, 'exact')
   const ownManifest = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
   const answered = { writeHead(code, headers) { this.code = code; this.headers = headers }, end(body) { this.body = body } }
-  infoRoute.handler({ method: 'GET' }, answered)
+  // The handler is async: it probes WSL (default distribution, kernel, capabilities)
+  // before answering, so the body exists only after the await.
+  await infoRoute.handler({ method: 'GET' }, answered)
   eq('the route answers 200', answered.code, 200)
   eq('the route forbids caching', answered.headers['cache-control'], 'no-store')
   const payload = JSON.parse(answered.body)
@@ -813,8 +815,18 @@ async function toolTests(tools, shim) {
   check('it carries no filesystem paths',
     !JSON.stringify(payload).includes(process.cwd()),
     JSON.stringify(payload).slice(0, 160))
+  // Both of these are best-effort reads: a value or null, never a wrong value.
+  check('it reports the DSH build only when it could read one',
+    payload.dsh === null || (typeof payload.dsh === 'object' && typeof payload.dsh.version === 'string'),
+    JSON.stringify(payload.dsh))
+  check('it never mistakes this plugin for the application',
+    payload.dsh === null || payload.dsh.name !== payload.name,
+    JSON.stringify(payload.dsh))
+  check('the WSL facts are an object or null, never a guess',
+    payload.wsl === null || typeof payload.wsl === 'object',
+    JSON.stringify(payload.wsl))
   const refusedInfo = { writeHead(code) { this.code = code }, end() {} }
-  infoRoute.handler({ method: 'POST' }, refusedInfo)
+  await infoRoute.handler({ method: 'POST' }, refusedInfo)
   eq('a non-GET is refused with 405', refusedInfo.code, 405)
 
   console.log('\nwsl: timeout')

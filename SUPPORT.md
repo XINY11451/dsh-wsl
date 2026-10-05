@@ -17,12 +17,12 @@ This plugin has one maintainer, so getting the report to the right place saves a
 ## 提交 bug 前，先把这几件事准备好 / Before filing a bug
 
 1. **插件版本** —— 面板底部的「复制插件信息」会替你读出来（来自 `package.json`），或 `npm ls dsh-wsl-tool` / The plugin version, read out by 「复制插件信息」 in the panel (from `package.json`), or `npm ls dsh-wsl-tool`
-2. **DSH 版本** —— 设置里能看到 / The DSH version, shown in Settings
-3. **WSL 发行版与内核** —— `wsl -l -v`；装了本插件的话，跑一次 `wsl-env` 工具最快 / Distribution and kernel from `wsl -l -v`, or one `wsl-env` call
+2. **DSH 版本** —— 同一个按钮也会读出来（从应用自己的 manifest），设置里也能看到 / The same button reads it out (from the application's own manifest); Settings shows it too
+3. **WSL 发行版与内核** —— 同一个按钮会替你探测（默认发行版、内核、systemd/docker/GPU 等能力标记）；也可用 `wsl -l -v` 或 `wsl-env` 工具 / The same button probes them (default distribution, kernel, capability flags such as systemd, docker and GPU); `wsl -l -v` or one `wsl-env` call work too
 4. **原文**：完整命令、完整报错、界面上出现的话 —— 不要转述 / The exact command, the exact error, the exact UI text — not a paraphrase
 
-侧边栏面板底部是**一个**反馈入口：旁边写着提交指南（标题怎么起、正文写哪三段、粘到哪个字段），以及一个「复制插件信息」按钮。宿主半从本包的 `package.json` 读出包名、版本与仓库，并附上 Node、平台与当前生效的配置；面板把它连同各开关状态一起复制给你 —— 粘进 Issue 的「补充」栏即可。它**不会**自己发送任何东西。
-The panel ends with **one** feedback entry: a submission guide beside it (how to title it, which three paragraphs the body needs, which field to paste into) and a 「复制插件信息」 button. The host half reads the package name, version and repository out of this package's `package.json` and adds Node, the platform and the effective configuration; the panel copies that plus the switch states — paste it into the issue's 「补充」 field. It sends nothing by itself.
+侧边栏面板底部是**一个**反馈入口：旁边写着提交指南（标题怎么起、正文写哪三段、粘到哪个字段），以及一个「复制插件信息」按钮。点它会由宿主半**自动读取**：包名、版本、仓库（来自本包的 `package.json`）、Node 与平台、它正运行在哪个 DSH 构建里、以及 WSL 的默认发行版/内核/能力标记 —— 再配上当前生效的配置和各开关状态，一次复制完。粘进 Issue 的「补充」栏即可。读取要跑几次 WSL 探测，所以按钮会先显示「正在读取…」；读不到的项会写明"未能读取"，不会编造。它**不会**自己发送任何东西。
+The panel ends with **one** feedback entry: a submission guide beside it (how to title it, which three paragraphs the body needs, which field to paste into) and a 「复制插件信息」 button. The host half **reads it all in**: package name, version and repository (from this package's `package.json`), Node and the platform, the DSH build it is running inside, and WSL's default distribution, kernel and capability flags — plus the effective configuration and the switch states. Paste that into the issue's 「补充」 field. A few WSL probes run first, so the button reads 「正在读取…」; anything unreadable says so instead of guessing. It sends nothing by itself.
 
 ## 关于隐私 / Privacy
 
