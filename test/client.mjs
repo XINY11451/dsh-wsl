@@ -273,6 +273,25 @@ check('the reset reports success', resetSettled === true, String(resetSettled))
 // The feedback entry: one place, a link to GitHub's issue chooser, and a locally
 // assembled block for everyone who cannot reach GitHub — the plugin itself sends
 // nothing, so the copied text is the whole contract.
+// The workdir input: one place to set the fixed Linux directory, written through the
+// same scope as the switches. Empty must clear the path rather than writing an empty
+// string, which is what hands the decision back to the follow-session switch.
+console.log('\nworkdir input')
+const workdirInput = found.find((node) => node.type === 'input'
+  && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('/mnt/'))
+check('the panel offers a workdir input', workdirInput !== undefined)
+const saveWorkdir = found.find((node) => node.props?.children === '保存')
+check('it offers a save control', saveWorkdir !== undefined)
+workdirInput.props.onChange({ target: { value: '/mnt/d/proj' } })
+await saveWorkdir.props.onClick()
+check('saving writes the configured directory',
+  ops.some((entry) => entry.batch?.some((op) => op.op === 'set' && op.path.join('.') === 'workdir' && op.value === '/mnt/d/proj')),
+  JSON.stringify(ops.slice(-2)))
+workdirInput.props.onChange({ target: { value: '   ' } })
+await saveWorkdir.props.onClick()
+check('clearing it unsets the path instead of writing blanks',
+  ops.some((entry) => entry.batch?.some((op) => op.op === 'unset' && op.path.join('.') === 'workdir')),
+  JSON.stringify(ops.slice(-2)))
 console.log('\nfeedback entry')
 eq('the panel offers exactly one feedback entry',
   found.filter((node) => node.props?.children === '意见反馈 / 提升建议').length, 1)
