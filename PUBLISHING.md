@@ -117,6 +117,22 @@ both that the entry stays relative and that it resolves.
    artifact, not just the metadata. Scripted requests to `npmjs.com`'s HTML hit a
    Cloudflare challenge; the registry API is the source of truth.
 
+   Two things make a published release look unpublished, so rule them out before
+   believing a negative:
+
+   - **A green run is not proof that npm was published.** The `Publish to npm`
+     step exits 0 with a warning when `NPM_TOKEN` is absent, so the run stays
+     green while npm is skipped. Ask the jobs API whether the step really ran —
+     a real run has `started_at`; a skipped one has `conclusion: skipped` and no
+     timestamp — and ask the registry what actually handles the version
+     (`time[<version>]` on the packument).
+
+   - **A failing `npm whoami` says nothing about the release.** A stale token in
+     `~/.npmrc` only means that machine cannot publish by hand; CI has its own
+     credential. Release state lives in the three artifacts — the tag's commit,
+     the release asset, and the registry tarball — so compare their bytes rather
+     than your credentials.
+
    Expect the registry's caches to lag a publish by minutes, and to lag
    *inconsistently*: the full packument, the abbreviated (install) packument,
    `/-/package/<name>/dist-tags` and the tarball URL each cache separately, so one

@@ -9,8 +9,9 @@ name: release
 # download count. The published name is `dsh-wsl-tool`, NOT the repository name:
 # the registry rejects `dsh-wsl` as too similar to the existing package `is-wsl`,
 # and no token can override that. `package.json` owns the name; this workflow only
-# has to avoid assuming it. That step is skipped until the NPM_TOKEN secret
-# exists, so this workflow is safe to run before the npm account is set up.
+# has to avoid assuming it. The npm step needs the NPM_TOKEN secret: without it the
+# step warns and exits successfully, so the release asset still ships and a GREEN RUN
+# does not by itself prove npm was published — check the registry (see PUBLISHING.md).
 on:
   push:
     tags: ['v*']
@@ -88,14 +89,19 @@ jobs:
       # access, unlike the job log. That is deliberate: this step is the only
       # part of the pipeline that needs a credential, so when it breaks the
       # reason has to be legible without asking a human to copy it out.
-      - name: Publish to npm (skipped until NPM_TOKEN exists)
+      #
+      # The step name carries no state. Whether it actually ran is visible in the
+      # jobs API as `started_at` on this step (`conclusion: skipped` has none), and
+      # whether it published is visible in the registry, never in the run colour:
+      # with NPM_TOKEN absent this step warns and exits 0 on purpose.
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -uo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN is not configured — skipping the npm publish."
-            echo "::notice::NPM_TOKEN is not set; the npm publish was skipped."
+            echo "::warning::NPM_TOKEN is not set; the npm publish was skipped — the release asset shipped, npm did not."
             exit 0
           fi
 
