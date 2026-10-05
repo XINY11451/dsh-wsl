@@ -13,7 +13,9 @@
 // behind a hand-written imitation.
 
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -27,6 +29,10 @@ import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../li
 import { assertLauncherReachable, collectForwardEnv, resolveDistro, sessionCwdOf } from '../lib/runner.js'
 import { capabilityLines, launcherSummary, parseFacts, workspaceLine } from '../lib/diagnostics.js'
 import { parseDefaultDistro } from '../lib/tools/wsl-env.js'
+import {
+  parseFlowSequence, readTerminalCwd, reviewTerminalWrite, splitPatchLines, validateTerminalCwd,
+  verifyTerminalRewrite, writeTerminalCwd,
+} from '../lib/terminal-cwd.js'
 
 // One resolved configuration stands in for the mount the host would create.
 const CONFIG = resolveConfig({})
@@ -199,6 +205,66 @@ function statSafe(path) {
   try { return statSync(path).size } catch { return -1 }
 }
 
+/**
+ * A profile patch shaped like the real one: unrelated entries, then the
+ * `terminal-controller` override the optional recipe installs.
+ *
+ * `argsLine` is the one line the terminal-startup feature rewrites, so the tests can
+ * vary its shape (padded, tight, a trailing comment, a block list) without touching
+ * anything else.
+ */
+function samplePatch(argsLine = "      args: [ '-d', 'Ubuntu-22.04', '-e', 'bash', '-l' ]") {
+  return [
+    '# Your patch layer for this dsh profile, applied after every bundle layer.',
+    '- id: ui-settings',
+    '  config:',
+    '    enabled: true',
+    '- id: terminal-controller',
+    '  config:',
+    '    shell:',
+    "      path: 'C:\\Windows\\System32\\wsl.exe'",
+    '      name: WSL',
+    argsLine,
+    '',
+  ].join('\n')
+}
+
+/** The `args:` line of a patch text, for line-level assertions. */
+function argsLineOf(text) {
+  return splitPatchLines(text).lines.find((line) => /^\s*args:/.test(line)) ?? ''
+}
+
+/** How many lines differ between two texts (the feature must change exactly one). */
+function changedLines(before, after) {
+  const a = splitPatchLines(before).lines
+  const b = splitPatchLines(after).lines
+  if (a.length !== b.length) return -1
+  let changed = 0
+  for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) changed += 1
+  return changed
+}
+
+/**
+ * Drive one registered route with a fake request/response, the way node:http would: one
+ * body chunk and the end, and the codes/headers/body the handler answered.
+ */
+function callRoute(route, method, body, headers) {
+  const request = {
+    method,
+    headers: headers ?? (method === 'POST' ? { 'content-type': 'application/json' } : {}),
+    on(event, callback) {
+      if (event === 'data' && body !== undefined) callback(Buffer.from(body, 'utf8'))
+      if (event === 'end') callback()
+      return this
+    },
+  }
+  const response = {
+    writeHead(code, responseHeaders) { this.code = code; this.headers = responseHeaders },
+    end(text) { this.body = text },
+  }
+  return Promise.resolve(route.handler(request, response)).then(() => response)
+}
+
 /** The real provider, behind the same `{ calls, spawn }` shape as the shim. */
 async function makeRealBackend(modulesRoot) {
   const load = (relative) => import(pathToFileURL(`${modulesRoot}/${relative}`).href)
@@ -239,7 +305,7 @@ function makeJobs() {
   }
 }
 
-function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
+function makeCtx(shim, { jobs, shellEnv, settings, profileContext } = {}) {
   const tools = {}
   const handlers = new Map()
   const routes = []
@@ -254,7 +320,10 @@ function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
     tools: { register(tool) { tools[tool.name] = tool } },
     subprocess: shim,
     // Optional services: the plugin must work when these return undefined.
-    get: (name) => (name === 'jobs' ? jobs : name === 'shellEnv' ? shellEnv : undefined),
+    get: (name) => (name === 'jobs' ? jobs
+      : name === 'shellEnv' ? shellEnv
+        : name === 'profileContext' ? profileContext
+          : undefined),
     // Event handlers, so a test can fire a live settings update. Kept off the tool
     // map's enumerable keys: those are asserted on with Object.keys.
     on: (event, callback) => { handlers.set(event, callback) },
@@ -319,6 +388,235 @@ async function unitTests() {
   eq('tilde-only path stays bare', quotePath('~'), '~')
   eq('relative path is quoted', quotePath('relative dir'), "'relative dir'")
   eq('a single quote is escaped', shellQuote("it's"), "'it'\\''s'")
+
+  // The sidebar terminal's startup directory lives in the profile patch, not in this
+  // plugin's configuration, so the rules for touching that file are their own unit:
+  // one line in, one line out, nothing else moved.
+  console.log('\nterminal startup directory: patch text')
+  const before = samplePatch()
+  const initial = readTerminalCwd(before)
+  eq('an unset terminal starts empty', initial.path, '')
+  eq('the terminal row is reported as present', initial.row, true)
+  eq('reading a fine patch reports no error', initial.error, null)
+
+  const set = writeTerminalCwd(before, '/mnt/d/project')
+  eq('a directory is written', set.ok, true)
+  eq('the written value is the trimmed path', set.path, '/mnt/d/project')
+  eq('exactly one line changes', changedLines(before, set.text), 1)
+  eq('the line count is unchanged', splitPatchLines(set.text).lines.length, splitPatchLines(before).lines.length)
+  eq('and it is the args line, with the flag before -e', argsLineOf(set.text),
+    "      args: [ '-d', 'Ubuntu-22.04', '--cd', '/mnt/d/project', '-e', 'bash', '-l' ]")
+  eq('reading it back gives the same directory', readTerminalCwd(set.text).path, '/mnt/d/project')
+
+  const moved = writeTerminalCwd(set.text, '/mnt/c/other')
+  eq('changing the directory keeps exactly one --cd', (moved.text.match(/--cd/g) ?? []).length, 1)
+  eq('the second write wins', readTerminalCwd(moved.text).path, '/mnt/c/other')
+  check('the replaced directory is gone', !moved.text.includes('/mnt/d/project'), moved.text)
+
+  const equalsPatch = samplePatch("      args: [ '--cd=/mnt/old', '-e', 'bash' ]")
+  eq('the --cd=value form is read', readTerminalCwd(equalsPatch).path, '/mnt/old')
+  const equals = writeTerminalCwd(equalsPatch, '/mnt/new')
+  eq('the --cd=value form is replaced, not duplicated', (equals.text.match(/--cd/g) ?? []).length, 1)
+  eq('it is written back as a flag with a separate value', readTerminalCwd(equals.text).path, '/mnt/new')
+
+  const cleared = writeTerminalCwd(set.text, '   ')
+  eq('an empty field removes the flag', (cleared.text.match(/--cd/g) ?? []).length, 0)
+  eq('clearing restores the original args line', argsLineOf(cleared.text), argsLineOf(before))
+  eq('clearing reports an empty path', cleared.path, '')
+
+  eq('tight bracket spacing is preserved',
+    argsLineOf(writeTerminalCwd(samplePatch("      args: ['-e', 'bash', '-l']"), '/mnt/d/x').text),
+    "      args: ['--cd', '/mnt/d/x', '-e', 'bash', '-l']")
+  check('padded bracket spacing is preserved', argsLineOf(set.text).startsWith('      args: [ '), argsLineOf(set.text))
+  check('a trailing comment survives the rewrite',
+    argsLineOf(writeTerminalCwd(samplePatch("      args: [ '-e', 'bash' ]  # keep -l"), '/x').text).endsWith('# keep -l'))
+  eq('a path with a space stays one scalar',
+    readTerminalCwd(writeTerminalCwd(before, '/mnt/c/Program Files').text).path, '/mnt/c/Program Files')
+  eq('a token with an apostrophe round-trips', parseFlowSequence("[ 'it''s', '-e' ]").tokens[0], "it's")
+
+  // YAML double-quoted scalars are the idiomatic way to write a Windows path (each
+  // backslash doubled). Reading one as if the escapes were literal would DOUBLE the
+  // backslashes on the way back out, silently changing a value the user already had.
+  const doubleQuotedPatch = samplePatch('      args: [ "--cd", "C:\\\\Users\\\\me\\\\My Documents", "-e", "bash" ]')
+  eq('a double-quoted path is decoded', readTerminalCwd(doubleQuotedPatch).path, 'C:\\Users\\me\\My Documents')
+  const doubleQuotedParsed = parseFlowSequence('[ "--cd", "C:\\\\Users\\\\me" ]')
+  eq('and the token itself carries one backslash', doubleQuotedParsed.tokens[1], 'C:\\Users\\me')
+  const rewritten = writeTerminalCwd(doubleQuotedPatch, 'D:\\work')
+  eq('a double-quoted patch can be rewritten', rewritten.ok, true)
+  eq('the new value is what lands', readTerminalCwd(rewritten.text).path, 'D:\\work')
+  // A double-quoted token this plugin does NOT own must come back with the same VALUE,
+  // even though it is re-rendered as a single-quoted scalar.
+  const otherToken = writeTerminalCwd(samplePatch('      args: [ "-d", "C:\\\\Ubuntu", "-e", "bash" ]'), '/mnt/d/x')
+  check('an unrelated double-quoted token keeps its single backslash',
+    argsLineOf(otherToken.text) === "      args: [ '-d', 'C:\\Ubuntu', '--cd', '/mnt/d/x', '-e', 'bash' ]",
+    argsLineOf(otherToken.text))
+  // An escape this reader does NOT decode must refuse the line rather than rewrite it as
+  // something that means something else.
+  eq('an undecodable double-quote escape refuses the line', parseFlowSequence('[ "-e", "a\\tb" ]'), null)
+  const escapedRefusal = writeTerminalCwd(samplePatch('      args: [ "-e", "a\\tb" ]'), '/mnt/d/x')
+  check('and the write is refused with the text untouched',
+    escapedRefusal.ok === false && escapedRefusal.text === samplePatch('      args: [ "-e", "a\\tb" ]'),
+    String(escapedRefusal.error))
+
+  const rejectedNewline = writeTerminalCwd(before, '/mnt/a\n/mnt/b')
+  check('a line break is refused', rejectedNewline.ok === false && /换行/.test(rejectedNewline.error), String(rejectedNewline.error))
+  check('a refused write hands back the text untouched', rejectedNewline.text === before)
+  const rejectedQuote = writeTerminalCwd(before, "/mnt/it's")
+  check('a quote is refused', rejectedQuote.ok === false && /引号/.test(rejectedQuote.error), String(rejectedQuote.error))
+  check('that refusal also leaves the text untouched', rejectedQuote.text === before)
+  eq('validate refuses a non-string', validateTerminalCwd(null).ok, false)
+  eq('validate trims a path', validateTerminalCwd('  /mnt/d/x  ').value, '/mnt/d/x')
+  eq('validate reads whitespace as "no flag"', validateTerminalCwd('   ').value, '')
+
+  const noRow = samplePatch().replace(/- id: terminal-controller\n/, '')
+  const noRowWrite = writeTerminalCwd(noRow, '/x')
+  check('a patch without the terminal row is refused',
+    noRowWrite.ok === false && /terminal-controller/.test(noRowWrite.error), String(noRowWrite.error))
+  const noRowRead = readTerminalCwd(noRow)
+  check('reading it reports "no row" rather than an error',
+    noRowRead.row === false && noRowRead.error === null, JSON.stringify(noRowRead))
+  const blockArgsText = samplePatch('      args:\n        - -e\n        - bash')
+  const blockArgs = writeTerminalCwd(blockArgsText, '/x')
+  check('a block-style args list is refused rather than rewritten', blockArgs.ok === false, String(blockArgs.ok))
+  check('the refused block-style text is unchanged', blockArgs.text === blockArgsText)
+  const twoArgs = writeTerminalCwd(samplePatch("      args: [ '-e' ]\n      args: [ '-l' ]"), '/x')
+  check('two args lines in one entry are refused as ambiguous',
+    twoArgs.ok === false && /不止一处/.test(twoArgs.error), String(twoArgs.error))
+
+  // The args this feature owns live INSIDE the row's `shell:` mapping, so the search is
+  // anchored there: a flow-style shell (nothing to rewrite line-wise), a shell with no
+  // args line, and an `args:` that is a SIBLING of shell are all handled without guessing.
+  const flowShell = [
+    '- id: terminal-controller',
+    '  config:',
+    "    shell: {path: 'C:\\Windows\\System32\\wsl.exe', name: WSL, args: ['-e', 'bash']}",
+    '',
+  ].join('\n')
+  const flowRead = readTerminalCwd(flowShell)
+  check('a flow-style shell is reported rather than guessed at',
+    flowRead.row === true && typeof flowRead.error === 'string', JSON.stringify(flowRead))
+  const flowWrite = writeTerminalCwd(flowShell, '/x')
+  check('and writing to it is refused with the text untouched',
+    flowWrite.ok === false && flowWrite.text === flowShell, String(flowWrite.error))
+  const noArgsShell = [
+    '- id: terminal-controller',
+    '  config:',
+    '    shell:',
+    "      path: 'C:\\Windows\\System32\\wsl.exe'",
+    '      name: WSL',
+    '',
+  ].join('\n')
+  check('a shell with no args line is refused', writeTerminalCwd(noArgsShell, '/x').ok === false)
+  const siblingArgs = [
+    '- id: terminal-controller',
+    '  config:',
+    '    shell:',
+    "      path: 'C:\\Windows\\System32\\wsl.exe'",
+    '      name: WSL',
+    "      args: [ '-e', 'bash' ]",
+    '    args: [ "a sibling of shell, not ours" ]',
+    '',
+  ].join('\n')
+  const siblingWrite = writeTerminalCwd(siblingArgs, '/mnt/d/x')
+  eq('the shell mapping is what gets rewritten', siblingWrite.ok, true)
+  eq('and exactly one line changes', changedLines(siblingArgs, siblingWrite.text), 1)
+  check('an args line that is a sibling of shell is ignored',
+    siblingWrite.text.includes('    args: [ "a sibling of shell, not ours" ]'), siblingWrite.text)
+
+  const crlf = samplePatch().split('\n').join('\r\n')
+  const crlfSet = writeTerminalCwd(crlf, '/mnt/d/x')
+  check('a CRLF patch is rewritten as CRLF', crlfSet.text.includes('\r\n')
+    && !crlfSet.text.split('\r\n').some((line) => line.includes('\n')), JSON.stringify(crlfSet.text.slice(-80)))
+  eq('the CRLF rewrite verifies', verifyTerminalRewrite(crlf, crlfSet.text, '/mnt/d/x'), null)
+
+  // A patch can be MIXED, and the author's own profile is: 5 CRLF lines among 37 LF
+  // ones, written by different tools over time. A splitter that assumes one file-wide
+  // ending reads that 42-line file as six lines, finds no terminal row at all, and then
+  // refuses every write with "no such row" — measured, before the terminator was kept
+  // per line. Both halves of that are pinned here.
+  console.log('\nterminal startup directory: mixed line endings')
+  const mixed = samplePatch().replace('\n', '\r\n')
+  const mixedRead = readTerminalCwd(mixed)
+  eq('a mixed-ending patch still finds the row', mixedRead.row, true)
+  eq('and reads its value', mixedRead.path, '')
+  eq('lines are counted per line, not per ending',
+    splitPatchLines(mixed).lines.length, splitPatchLines(samplePatch()).lines.length)
+  const mixedSet = writeTerminalCwd(mixed, '/mnt/d/x')
+  eq('the mixed rewrite verifies', verifyTerminalRewrite(mixed, mixedSet.text, '/mnt/d/x'), null)
+  eq('only the args line changes', changedLines(mixed, mixedSet.text), 1)
+  eq('the CRLF line keeps its ending', splitPatchLines(mixedSet.text).eols[0], '\r\n')
+  eq('every other byte is preserved',
+    mixedSet.text.split(argsLineOf(mixedSet.text)).join(argsLineOf(mixed)), mixed)
+
+  console.log('\nterminal startup directory: write verification')
+  eq('a good rewrite verifies', verifyTerminalRewrite(before, set.text, '/mnt/d/project'), null)
+  check('a BOM is caught', /BOM/.test(String(verifyTerminalRewrite(before, `\uFEFF${set.text}`, '/mnt/d/project'))))
+  check('a lost line is caught',
+    /行数/.test(String(verifyTerminalRewrite(before, set.text.replace('\n', ''), '/mnt/d/project'))))
+  check('a second changed line is caught',
+    /应当只改/.test(String(verifyTerminalRewrite(before, set.text.replace('name: WSL', 'name: WSL2'), '/mnt/d/project'))))
+  check('a value that does not read back is caught',
+    /读回/.test(String(verifyTerminalRewrite(before, set.text, '/mnt/d/other'))))
+
+  // What to do with what landed: accept our own write, undo our own bad write, and NEVER
+  // overwrite a version somebody else wrote after us.
+  console.log('\nterminal startup directory: post-write review')
+  eq('a correct write is accepted', reviewTerminalWrite(before, set.text, set.text, '/mnt/d/project').verdict, 'ok')
+  const conflicted = reviewTerminalWrite(before, `${set.text}# someone else\n`, set.text, '/mnt/d/project')
+  eq('a file somebody else changed is a conflict', conflicted.verdict, 'conflict')
+  check('and the conflict refuses to restore over them',
+    /未自动还原/.test(String(conflicted.error)), String(conflicted.error))
+  eq('a file that cannot be read back is undone',
+    reviewTerminalWrite(before, null, set.text, '/mnt/d/project').verdict, 'undo')
+  const landedWrong = set.text.replace('name: WSL', 'name: WSL2')
+  eq('our own text that landed wrong is undone',
+    reviewTerminalWrite(before, landedWrong, landedWrong, '/mnt/d/project').verdict, 'undo')
+
+  // The terminal row does not have to sit at column zero: an override nested under an
+  // `insert:` list is the same override, and its block still has to end before the next
+  // sibling — otherwise a LATER row's args line would look like a second candidate.
+  console.log('\nterminal startup directory: an indented row')
+  const nested = [
+    '- insert:',
+    '    - id: terminal-controller',
+    '      config:',
+    '        shell:',
+    "          path: 'C:\\Windows\\System32\\wsl.exe'",
+    '          name: WSL',
+    "          args: [ '-e', 'bash', '-l' ]",
+    '    - id: another-row',
+    '      config:',
+    '        args: [ "not", "ours" ]',
+    '',
+  ].join('\n')
+  const nestedRead = readTerminalCwd(nested)
+  eq('a nested terminal row is found', nestedRead.row, true)
+  eq('and reads as unset', nestedRead.path, '')
+  const nestedSet = writeTerminalCwd(nested, '/mnt/d/x')
+  eq('a nested row can be written', nestedSet.ok, true)
+  eq('only its args line changes', changedLines(nested, nestedSet.text), 1)
+  check('the rewritten line keeps the row indentation',
+    argsLineOf(nestedSet.text).startsWith('          args: [ '), argsLineOf(nestedSet.text))
+  check('--cd still lands before -e',
+    argsLineOf(nestedSet.text).indexOf("'--cd'") < argsLineOf(nestedSet.text).indexOf("'-e'"),
+    argsLineOf(nestedSet.text))
+  check('the next sibling entry is untouched',
+    nestedSet.text.includes('        args: [ "not", "ours" ]'), nestedSet.text)
+
+  // A deeper list inside the row must NOT cut the block short before its `args:` line.
+  const deeperList = [
+    '  - id: terminal-controller',
+    '    config:',
+    '      shell:',
+    '        path: wsl.exe',
+    '        name: WSL',
+    '        shellAliases:',
+    '          - bash',
+    "        args: [ '-e', 'bash' ]",
+    '',
+  ].join('\n')
+  eq('a deeper list inside the row does not hide its args line',
+    writeTerminalCwd(deeperList, '/mnt/d/x').ok, true)
 
   // The schema builder has to be PICKED, not destructured: the real namespace of
   // `@deepseek-ai/schemastery` is `{ default: Schema }`, so `{ Schema }` is
@@ -816,10 +1114,11 @@ async function toolTests(tools, shim) {
   // The panel's 「复制插件信息」 gets the version from here, so a release never has to
   // edit a string in the client half: the Host half reads its own manifest.
   console.log('\nself-info route')
-  eq('the plugin publishes exactly one route', tools.routes.length, 1)
-  const infoRoute = tools.routes[0]
-  eq('the route path is namespaced', infoRoute.path, '/dsh-wsl-tool/info')
-  eq('the route matches exactly', infoRoute.kind, 'exact')
+  eq('the plugin publishes exactly its two routes', tools.routes.length, 2)
+  const infoRoute = tools.routes.find((route) => route.path === '/dsh-wsl-tool/info')
+  const terminalRoute = tools.routes.find((route) => route.path === '/dsh-wsl-tool/terminal-cwd')
+  check('the self-info route is namespaced', infoRoute !== undefined, JSON.stringify(tools.routes.map((r) => r.path)))
+  eq('the route matches exactly', infoRoute?.kind, 'exact')
   const ownManifest = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
   const answered = { writeHead(code, headers) { this.code = code; this.headers = headers }, end(body) { this.body = body } }
   // The handler is async: it probes WSL (default distribution, kernel, capabilities)
@@ -849,6 +1148,161 @@ async function toolTests(tools, shim) {
   const refusedInfo = { writeHead(code) { this.code = code }, end() {} }
   await infoRoute.handler({ method: 'POST' }, refusedInfo)
   eq('a non-GET is refused with 405', refusedInfo.code, 405)
+
+  // The panel's 「WSL 终端启动路径」 edits the profile's OWN patch layer, because the
+  // sidebar terminal belongs to another plugin and only that layer can override its
+  // `args`. These checks drive the real route handler against a temporary profile, so
+  // the backup / write / read-back path is what is exercised, not a re-imitation of it.
+  console.log('\nterminal-cwd route')
+  check('the terminal route is published', terminalRoute !== undefined)
+  eq('the terminal route matches exactly', terminalRoute?.kind, 'exact')
+  const profileDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-profile-'))
+  const bareDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-bare-'))
+  const capDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-cap-'))
+  const previousProfileDir = process.env.DSH_PROFILE_DIR
+  try {
+    const patchFile = join(profileDir, 'cordis.patch.yml')
+    const original = samplePatch()
+    writeFileSync(patchFile, original, 'utf8')
+    // A body arrives as a stream; this fake replays one chunk and the end, which is all
+    // the handler needs, and records what the handler answered. Writes carry the JSON
+    // content type by default because the route requires it (checked below).
+    const call = (method, body, headers) => callRoute(terminalRoute, method, body, headers)
+    const backupsIn = (dir) => readdirSync(dir).filter((name) => name.includes('.bak-'))
+
+    process.env.DSH_PROFILE_DIR = profileDir
+    const read = await call('GET')
+    eq('GET answers 200', read.code, 200)
+    const readBody = JSON.parse(read.body)
+    eq('GET reports no startup directory yet', readBody.path, '')
+    check('GET reports the terminal row as available', readBody.available === true, read.body)
+
+    // The host web server has no origin policy of its own, so the route refuses anything
+    // but JSON: a cross-site page cannot set that content type without a preflight, and
+    // no preflight is ever answered. A form or a `no-cors` fetch cannot set it at all.
+    const formPost = await call('POST', JSON.stringify({ path: '/mnt/evil' }), { 'content-type': 'text/plain' })
+    eq('a form-style content type is refused with 415', formPost.code, 415)
+    check('and it says why', /application\/json/.test(String(JSON.parse(formPost.body).error)), formPost.body)
+    const barePost = await call('POST', JSON.stringify({ path: '/mnt/evil' }), {})
+    eq('a POST with no content type is refused too', barePost.code, 415)
+    eq('neither refusal touched the file', readFileSync(patchFile, 'utf8'), original)
+    eq('neither refusal took a backup', backupsIn(profileDir).length, 0)
+
+    const saved = await call('POST', JSON.stringify({ path: '/mnt/d/project' }))
+    eq('POST answers 200', saved.code, 200)
+    const savedBody = JSON.parse(saved.body)
+    check('POST reports success', savedBody.ok === true, saved.body)
+    eq('POST echoes the saved directory', savedBody.path, '/mnt/d/project')
+    const written = readFileSync(patchFile, 'utf8')
+    eq('only the args line changed on disk', changedLines(original, written), 1)
+    eq('the directory is on disk', readTerminalCwd(written).path, '/mnt/d/project')
+    const backups = backupsIn(profileDir)
+    eq('a backup was taken before the write', backups.length, 1)
+    if (backups.length === 1) {
+      eq('the backup holds the pre-write file', readFileSync(join(profileDir, backups[0]), 'utf8'), original)
+    }
+    const onDisk = readFileSync(patchFile)
+    check('the write added no BOM', onDisk[0] !== 0xef && onDisk[1] !== 0xbb, onDisk.subarray(0, 3).toString('hex'))
+    eq('GET now reports the directory', JSON.parse((await call('GET')).body).path, '/mnt/d/project')
+
+    const again = JSON.parse((await call('POST', JSON.stringify({ path: '/mnt/d/project' }))).body)
+    check('saving the value that is already there succeeds', again.ok === true, again.body)
+    eq('and that no-op takes no second backup', backupsIn(profileDir).length, 1)
+
+    const refused = JSON.parse((await call('POST', JSON.stringify({ path: '/mnt/a\n/mnt/b' }))).body)
+    check('a multi-line path is refused', refused.ok === false, JSON.stringify(refused))
+    check('the refusal says why', /换行/.test(String(refused.error)), String(refused.error))
+    eq('the refused write left the file alone', readFileSync(patchFile, 'utf8'), written)
+    eq('a refusal takes no backup for a file it did not touch', backupsIn(profileDir).length, 1)
+    const quoted = JSON.parse((await call('POST', JSON.stringify({ path: "/mnt/it's" }))).body)
+    check('a quoted path is refused', quoted.ok === false && /引号/.test(String(quoted.error)), String(quoted.error))
+    eq('the quoted refusal left the file alone', readFileSync(patchFile, 'utf8'), written)
+
+    const cleared = JSON.parse((await call('POST', JSON.stringify({ path: '' }))).body)
+    check('an empty path clears the flag', cleared.ok === true, cleared.body)
+    eq('the cleared file carries no --cd', readTerminalCwd(readFileSync(patchFile, 'utf8')).path, '')
+    eq('the clear is a second backup', backupsIn(profileDir).length, 2)
+
+    eq('a malformed body is a 400', (await call('POST', '{oops')).code, 400)
+    eq('a body without a path field is a 400', (await call('POST', JSON.stringify({ nope: true }))).code, 400)
+    eq('another method is refused with 405', (await call('DELETE')).code, 405)
+
+    // A profile whose patch has no terminal row: the opt-in is missing, and the route
+    // must say so WITHOUT creating a row — adding one would switch the sidebar terminal
+    // to WSL without the user ever opting in.
+    writeFileSync(join(bareDir, 'cordis.patch.yml'), '- id: ui-settings\n  config:\n    enabled: true\n', 'utf8')
+    process.env.DSH_PROFILE_DIR = bareDir
+    const bareRead = JSON.parse((await call('GET')).body)
+    check('a patch without the terminal row reports available: false', bareRead.available === false, JSON.stringify(bareRead))
+    const bareWrite = JSON.parse((await call('POST', JSON.stringify({ path: '/mnt/d/x' }))).body)
+    check('writing into that profile is refused', bareWrite.ok === false, bareWrite.body)
+    eq('that profile was not touched at all', readdirSync(bareDir).length, 1)
+
+    process.env.DSH_PROFILE_DIR = ''
+    const noDir = JSON.parse((await call('GET')).body)
+    check('no patch location at all degrades instead of throwing',
+      noDir.available === false && typeof noDir.error === 'string', JSON.stringify(noDir))
+    check('and the error names both places it looked',
+      noDir.error.includes('profileContext') && noDir.error.includes('DSH_PROFILE_DIR'), String(noDir.error))
+
+    // One backup per save is the point, but they must not accumulate forever: the newest
+    // ten are kept, and only files carrying the exact name this plugin writes are ever
+    // considered (a hand-made `.bak` is not ours to delete).
+    writeFileSync(join(capDir, 'cordis.patch.yml'), original, 'utf8')
+    writeFileSync(join(capDir, 'cordis.patch.yml.bak-keep-me'), 'hand-made, not ours', 'utf8')
+    process.env.DSH_PROFILE_DIR = capDir
+    for (let index = 0; index < 14; index += 1) {
+      await call('POST', JSON.stringify({ path: `/mnt/d/p${index}` }))
+    }
+    const keptBackups = backupsIn(capDir).filter((name) => name !== 'cordis.patch.yml.bak-keep-me')
+    eq('old backups are pruned to the cap', keptBackups.length, 10)
+    const keptValues = keptBackups.map((name) => readTerminalCwd(readFileSync(join(capDir, name), 'utf8')).path)
+    const expectedKept = []
+    for (let index = 3; index <= 12; index += 1) expectedKept.push(`/mnt/d/p${index}`)
+    eq('the window holds the newest ten pre-write states',
+      keptValues.slice().sort().join(','), expectedKept.slice().sort().join(','))
+    eq('the current value survived the pruning',
+      readTerminalCwd(readFileSync(join(capDir, 'cordis.patch.yml'), 'utf8')).path, '/mnt/d/p13')
+    check('a backup name this plugin did not write is left alone',
+      existsSync(join(capDir, 'cordis.patch.yml.bak-keep-me')), 'hand-made .bak was deleted')
+  } finally {
+    if (previousProfileDir === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previousProfileDir
+    rmSync(profileDir, { recursive: true, force: true })
+    rmSync(bareDir, { recursive: true, force: true })
+    rmSync(capDir, { recursive: true, force: true })
+  }
+
+  // Where the patch file comes from. The host's own answer wins: `profileContext.patchPath`
+  // is the file the platform's settings UI edits. The environment is only the fallback,
+  // because MEASURED, the desktop host process does NOT carry DSH_PROFILE_DIR — only model
+  // tool subprocesses do. A route that trusted the environment found no patch file at all,
+  // reported `available: false`, and the panel showed a dead, untypeable field.
+  console.log('\nterminal-cwd route: where the patch file comes from')
+  const serviceDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-service-'))
+  const envDir = mkdtempSync(join(tmpdir(), 'dsh-wsl-env-'))
+  const previousProfileDirForService = process.env.DSH_PROFILE_DIR
+  try {
+    writeFileSync(join(serviceDir, 'cordis.patch.yml'), samplePatch(), 'utf8')
+    writeFileSync(join(envDir, 'cordis.patch.yml'), samplePatch(), 'utf8')
+    const serviceTools = makeCtx(shim, { profileContext: { patchPath: join(serviceDir, 'cordis.patch.yml') } })
+    const serviceRoute = serviceTools.routes.find((route) => route.path === '/dsh-wsl-tool/terminal-cwd')
+    process.env.DSH_PROFILE_DIR = envDir
+    const serviceRead = JSON.parse((await callRoute(serviceRoute, 'GET')).body)
+    eq('the service answer wins over the environment', serviceRead.available, true)
+    const serviceWrite = JSON.parse((await callRoute(serviceRoute, 'POST', JSON.stringify({ path: '/mnt/d/service' }))).body)
+    check('and the write succeeds', serviceWrite.ok === true, JSON.stringify(serviceWrite))
+    eq('the service file received the value',
+      readTerminalCwd(readFileSync(join(serviceDir, 'cordis.patch.yml'), 'utf8')).path, '/mnt/d/service')
+    eq('the environment file was left alone',
+      readFileSync(join(envDir, 'cordis.patch.yml'), 'utf8'), samplePatch())
+    eq('no backup appeared beside the environment file', readdirSync(envDir).length, 1)
+  } finally {
+    if (previousProfileDirForService === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previousProfileDirForService
+    rmSync(serviceDir, { recursive: true, force: true })
+    rmSync(envDir, { recursive: true, force: true })
+  }
 
   console.log('\nwsl: timeout')
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })
@@ -1200,6 +1654,28 @@ async function toolTests(tools, shim) {
     typeof entryName === 'string' && entryName.startsWith('./') && existsSync(resolve(dirname(patchFile), entryName)),
     String(entryName),
   )
+
+  // What a DOWNLOADED copy contains. `files` decides the tarball, so a document the
+  // panel or a README points at has to be in it — SUPPORT.md was referenced from both
+  // READMEs and from the panel's guide while missing from the tarball, so a user
+  // following the link hit nothing. A listed entry that does not exist is the mirror
+  // image: it silently drops content from the release.
+  console.log('\npm-packaged files')
+  const shipped = Array.isArray(manifest.files) ? manifest.files : []
+  for (const required of ['index.js', 'lib', 'cordis.patch.yml', 'README.md', 'README.zh-CN.md', 'SUPPORT.md', 'extras', 'LICENSE']) {
+    check(`the tarball ships ${required}`, shipped.includes(required), JSON.stringify(shipped))
+  }
+  for (const entry of shipped) {
+    check(`the listed entry ${entry} exists`, existsSync(resolve(packageRoot, entry)), entry)
+  }
+  // The client half is loaded by path from the manifest, so that path must ship too.
+  const clientEntry = manifest.dsh?.client
+  check('the manifest declares a client half', clientEntry !== undefined && clientEntry !== null,
+    JSON.stringify(manifest.dsh))
+  check('the client bundle the manifest points at ships',
+    shipped.includes('lib') && existsSync(resolve(packageRoot, 'lib/client.js')),
+    JSON.stringify(shipped))
+
 
   // The optional half: it must address a real composed row by id, must not switch
   // that row off (that would take the terminal feature away rather than adjust it),

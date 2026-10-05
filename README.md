@@ -119,6 +119,13 @@ specifier you install under.
 
 3. Restart DSH.
 
+The settings panel is the one optional piece: its form needs
+`@deepseek-ai/schemastery`, which most profiles already have (any plugin that
+depends on it brings it in — add it to the profile's dependencies if yours does
+not). Without it, the three tools and the panel's 「WSL 终端启动路径」 field work
+as usual and only the switches are absent — the panel says so instead of waiting
+forever.
+
 ## Compatibility
 
 Verified against DSH **0.1.7-rc.2** (and 0.1.5-rc.2 before it): the tool schemas
@@ -151,6 +158,7 @@ explanation.
 | 自动转换路径 | the default for the per-call `translatePaths` |
 | 默认跟随会话工作区 | start in the session's directory instead of `~` when `workdir` is omitted. **On by default**: with it off, every relative path an agent writes lands in the Linux home, which is invisible from Explorer and grows the WSL disk image |
 | Linux 默认工作目录 | a fixed Linux directory (for example `/mnt/d/project`) used when `workdir` is omitted. Filling it in wins over the switch above; clearing it goes back to following the session |
+| WSL 终端启动路径 | the optional sidebar terminal's startup directory — `--cd <dir>` on the `terminal-controller` row of your **profile patch** (see [Optional: a WSL terminal in the sidebar](#optional-a-wsl-terminal-in-the-sidebar)). Empty clears it, and the panel reads the current value from the same file |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
 
 The panel edits the plugin's own configuration, so the same values can be written
@@ -159,6 +167,11 @@ variables. `lib/config.js` owns the precedence — **plugin configuration, then 
 environment, then the built-in defaults** — and a switch left at its default lets
 the layer below decide, which is why `DSH_WSL_WORKDIR=session` keeps working for
 someone who never opened the panel.
+
+「WSL 终端启动路径」 is the one exception: the sidebar terminal belongs to another
+plugin, so that field edits your profile's patch layer instead — the file is backed
+up before every write, only the terminal row's `args` line is rewritten, and the
+result is read back and undone if it is not exactly that one line.
 
 **A change takes effect at the next DSH start**: the host reads this configuration
 once per mount, and the panel says so. Distro and timeout are values rather than
@@ -188,6 +201,14 @@ open — and the patch that enables it ships in the package as
 To turn it on, copy that entry into your profile's own patch layer
 (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`); a CLI launch can instead pass
 `--patch <path to the installed file>`. It applies at the next app start.
+
+The panel can set the startup directory for you: 「WSL 终端启动路径」 (beside 「默认
+Linux 工作目录」) reads the current value out of that file and writes `--cd <dir>` onto
+the row's `args` line — backing the patch up first, changing only that one line, and
+checking what landed before it is kept. Clearing the field removes the flag, which puts
+the terminal back on the session workspace (the Windows directory it is started from,
+translated to `/mnt/…`); `~` pins it to the Linux home. It takes effect at the next app
+start too.
 
 ```yaml
 - id: terminal-controller

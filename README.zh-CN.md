@@ -103,6 +103,10 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 
 3. 重启 DSH。
 
+设置面板是唯一可选的一块：它的表单需要 `@deepseek-ai/schemastery`，多数 profile 已经有了
+（只要装过任何依赖它的插件；没有的话把它加进 profile 的依赖即可）。没有它时，三个工具与
+面板里的「WSL 终端启动路径」照常可用，只是开关不显示 —— 面板会直接说明这一点，不会一直转圈等待。
+
 ## 兼容性
 
 已在 DSH **0.1.7-rc.2** 上验证（此前为 0.1.5-rc.2）：工具 schema 通过 DSH 自己的
@@ -132,11 +136,16 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | 自动转换路径 | 每次调用的 `translatePaths` 默认值 |
 | 默认跟随会话工作区 | 未传 `workdir` 时从会话目录开始，而不是 `~`。**默认开**：关掉的话，agent 写的相对路径都会落进 Linux 家目录 —— 那儿在资源管理器里看不见，还会撑大 WSL 磁盘镜像 |
 | Linux 默认工作目录 | 未传 `workdir` 时使用的固定 Linux 目录（如 `/mnt/d/project`）。填了就优先于上面的开关；清空则回到跟随会话 |
+| WSL 终端启动路径 | 可选的侧边栏终端从哪个目录启动 —— 写进你 **profile patch** 里 `terminal-controller` 那一行的 `--cd <目录>`（见[可选：在侧边栏开一个 WSL 终端](#可选在侧边栏开一个-wsl-终端)）。留空则删掉该参数；当前值也是从这个文件读的 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
 或用环境变量设。优先级由 `lib/config.js` 定：**插件配置 > 环境变量 > 内置默认值**；开关停在默认值时
 下层说了算 —— 这正是"从没打开过面板的人，`DSH_WSL_WORKDIR=session` 依然生效"的原因。
+
+「WSL 终端启动路径」是唯一的例外：侧边栏终端属于另一个插件，所以那个输入框改的是你 profile 的
+patch 层 —— 每次写入前先备份该文件，只重写终端那一行的 `args`，写后还会读回来核对，只要不是"只改了
+这一行"就当场还原。
 
 **改动在下次启动 DSH 后生效**：宿主每次挂载只读一次该配置，面板里也写着这句。发行版与超时属于"值"
 而不是"功能"：在 patch 里或用 `DSH_WSL_DISTRO` / `DSH_WSL_TIMEOUT_MS` 设置，面板只显示当前生效值。
@@ -158,6 +167,11 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 启用方式：把里面的条目复制进你自己 profile 的 patch 层
 （`$DSH_HOME/profiles/<profile>/cordis.patch.yml`）；命令行启动也可以改成
 `--patch <已安装文件路径>`。**下次启动应用时生效。**
+
+这个启动目录也能在面板里设：顶部的「WSL 终端启动路径」（挨着「默认 Linux 工作目录」）会从那个
+文件读出当前值，再把 `--cd <目录>` 写到该行 `args` 上 —— 写前先备份 patch 文件，只改这一行，
+写后读回来核对。**清空**则删掉该参数，终端回到跟随会话工作区（启动时的 Windows 目录会被翻译成
+`/mnt/…`）；填 `~` 固定到 Linux 家目录。改完同样**重启 DSH 生效**。
 
 ```yaml
 - id: terminal-controller
