@@ -1,0 +1,77 @@
+name: 🐞 Bug 报告 / Bug report
+description: 命令失败、面板异常、行为与文档不符 / A command fails, the panel misbehaves, or the behaviour contradicts the docs
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢反馈！环境那几栏请尽量填全 —— 它能省掉一整轮来回。
+        Thanks! Filling the environment block in saves a round trip.
+
+        只填你愿意公开的内容；提交前请把不便公开的路径、主机名、密钥删掉。
+        Only share what you are comfortable making public — remove paths, host names and secrets you would rather not publish.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本 / Plugin version
+      description: "市场条目里能看到，或 `npm ls dsh-wsl-tool` / From the market entry, or `npm ls dsh-wsl-tool`"
+      placeholder: "1.10.9"
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本 / DSH version
+      description: "设置里能看到 / Shown in Settings"
+      placeholder: "0.2.0-rc.2 (desktop)"
+    validations:
+      required: true
+  - type: input
+    id: wsl
+    attributes:
+      label: WSL 发行版与内核 / WSL distribution and kernel
+      description: "`wsl -l -v` 的输出；装了这个插件的话，直接跑一次 `wsl-env` 工具更快 / Output of `wsl -l -v`; with this plugin installed, one `wsl-env` call is faster"
+      placeholder: "Ubuntu-22.04, kernel 6.6.87.2"
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: 发生了什么 / What happened
+      description: 请贴原文：命令、报错、界面上出现的话 / Quote the exact command and the exact error or UI text
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望发生什么 / What you expected
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: extras
+    attributes:
+      label: 补充（可选）/ Anything else (optional)
+      description: "侧边栏面板底部的「复制插件信息」已把这台机器上的插件信息拼好 —— 直接粘这里最省事（插件版本、仓库、Node、平台、发行版、各开关状态）。也可以补 `wsl-env` 的完整输出，或 `cordis.patch.yml` 里与 `tool-wsl` 相关的片段。/ The panel's 「复制插件信息」 button assembles this plugin's facts for you to paste here — version, repository, Node, platform, distribution and switch states. Full `wsl-env` output and the `tool-wsl` part of your `cordis.patch.yml` are welcome too."
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认 / Confirm
+      options:
+        - label: 我已经删掉了不便公开的内容（路径、主机名、密钥等）/ I removed anything I do not want public
+          required: true

@@ -168,6 +168,13 @@ The settings surface needs `@deepseek-ai/schemastery`, which the plugin declares
 an optional peer dependency: without it the three tools still run on their defaults
 and only the panel is missing.
 
+At the bottom of the panel there is one feedback entry, next to it a short
+submission guide, and — see [Feedback](#feedback) — a 「复制插件信息」 button. The
+button asks the host half on `/dsh-wsl-tool/info` for this package's own facts
+(name, version and repository read from its manifest, Node, platform) plus the
+effective configuration, and copies the result. A release never edits a version
+string in the client half to keep that block honest.
+
 ## Optional: a WSL terminal in the sidebar
 
 The desktop app's sidebar terminal can open WSL instead of a Windows shell. It is
@@ -427,3 +434,30 @@ documented in [`PUBLISHING.md`](PUBLISHING.md).
 
 The repository carries the `dsh-plugin` topic and is listed under the `wsl`
 category of the awesome-dsh-plugin community list.
+
+## Feedback
+
+The sidebar panel ends with one feedback entry, and it sends nothing by itself.
+
+- **A bug or a concrete request** →
+  [open an issue](https://github.com/XINY11451/dsh-wsl/issues/new/choose). The
+  templates ask for the environment once, which is the difference between a report
+  that can be reproduced and a round trip.
+- **Usage questions and ideas** →
+  [Discussions](https://github.com/XINY11451/dsh-wsl/discussions).
+- **GitHub unreachable?** The panel's 「复制插件信息」 button asks the host half for
+  this package's own facts — name, version and repository straight out of its
+  `package.json`, plus Node, the platform and the effective configuration — and
+  copies them, together with the switch states the panel is already showing. Paste
+  that into the issue's 「补充」 field and only the prose is left to write. The
+  submission guide sits next to the button, in the panel.
+
+Everything in that block is text you can read and edit before it goes anywhere: no
+paths, host names or credentials are collected, and the plugin makes no request of
+its own — the route the button reads is served by the local host, not the network.
+Problems that belong elsewhere go to their own repositories — DSH itself →
+[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness/issues), the
+market UI →
+[dsh-market](https://github.com/dsh-market/dsh-market/issues), the catalog listing →
+[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/issues).
+The full routing table is in [SUPPORT.md](SUPPORT.md).

@@ -143,6 +143,11 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 这个设置界面需要 `@deepseek-ai/schemastery`（插件把它声明为可选 peer 依赖）：没有它三个工具照常按
 默认值工作，只是没有面板。
 
+面板**最底部**是一个反馈入口，旁边跟着一段简短的提交指南，以及一个「复制插件信息」按钮（详见
+[反馈](#反馈)）。按钮会向宿主半的 `/dsh-wsl-tool/info` 索取本插件自己的信息 —— 包名、版本、仓库
+（都从 `package.json` 读出）、Node 与平台，外加当前生效的配置 —— 然后复制出来。这样"发布时忘了改
+客户端里的版本号"就不可能发生。
+
 ## 可选：在侧边栏开一个 WSL 终端
 
 桌面版侧边栏终端可以开 WSL 而不是 Windows shell。这是**可选**的 —— 装插件**不会**改你终端默认
@@ -387,3 +392,23 @@ npm run sync -- /path/to/profiles/<profile>/node_modules/<你的依赖名>
 ## 收录
 
 本仓库带有 `dsh-plugin` topic，并已提交至 awesome-dsh-plugin 社区列表的 `wsl` 分类。
+
+## 反馈
+
+侧边栏面板最后一段就是反馈入口，它**不会自己发送任何东西**。
+
+- **缺陷或明确的需求** → [开一个 Issue](https://github.com/XINY11451/dsh-wsl/issues/new/choose)。
+  模板会问一次环境，这决定了报告能不能被复现、要不要多来回一轮。
+- **用法问题与想法** → [Discussions](https://github.com/XINY11451/dsh-wsl/discussions)。
+- **GitHub 打不开？** 面板里的「复制插件信息」按钮会向宿主半索取这个包自己的信息 ——
+  包名、版本、仓库（直接读 `package.json`），加上 Node、平台与当前生效的配置 ——
+  连同面板正显示着的开关状态一起复制出来。粘进 Issue 的「补充」栏即可，只剩正文要自己写。
+  提交指南就在按钮旁边，也在面板里。
+
+那段文本在发出去之前你都能看清、都能改：不采集路径、主机名或任何凭据，插件也不对外发起请求 ——
+按钮读的那个路由由本机宿主提供，不走网络。
+属于别处的问题请发到各自的仓库 —— DSH 本体 →
+[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness/issues)，市场界面 →
+[dsh-market](https://github.com/dsh-market/dsh-market/issues)，收录与目录 →
+[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/issues)。
+完整分流表见 [SUPPORT.md](SUPPORT.md)。

@@ -242,6 +242,14 @@ function makeJobs() {
 function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
   const tools = {}
   const handlers = new Map()
+  const routes = []
+  const effects = []
+  const webServer = {
+    register(route) {
+      routes.push(route)
+      return () => {}
+    },
+  }
   const ctx = {
     tools: { register(tool) { tools[tool.name] = tool } },
     subprocess: shim,
@@ -250,12 +258,25 @@ function makeCtx(shim, { jobs, shellEnv, settings } = {}) {
     // Event handlers, so a test can fire a live settings update. Kept off the tool
     // map's enumerable keys: those are asserted on with Object.keys.
     on: (event, callback) => { handlers.set(event, callback) },
+    // The self-info route is optional as well: record whatever the plugin registers.
+    inject: (deps, callback) => {
+      if (Array.isArray(deps) && deps.includes('webServer')) {
+        callback({
+          webServer,
+          effect: (fn) => {
+            effects.push(fn)
+            return () => {}
+          },
+        })
+      }
+    },
   }
   // `settings` is the plugin's own configuration as the composition resolves it
   // against the Config schema — what the sidebar panel writes. It is passed BY
   // REFERENCE because a volatile edit mutates it in place.
   apply(ctx, settings)
   Object.defineProperty(tools, 'handlers', { value: handlers, enumerable: false })
+  Object.defineProperty(tools, 'routes', { value: routes, enumerable: false })
   return tools
 }
 
@@ -770,6 +791,31 @@ async function toolTests(tools, shim) {
     command: 'rm -r -f /tmp/dsh-wsl-live; echo ran', description: 'now unguarded',
   })
   eq('a behaviour switch applies without a restart', liveRun.stdout.trim(), 'ran')
+
+  // The panel's 「复制插件信息」 gets the version from here, so a release never has to
+  // edit a string in the client half: the Host half reads its own manifest.
+  console.log('\nself-info route')
+  eq('the plugin publishes exactly one route', tools.routes.length, 1)
+  const infoRoute = tools.routes[0]
+  eq('the route path is namespaced', infoRoute.path, '/dsh-wsl-tool/info')
+  eq('the route matches exactly', infoRoute.kind, 'exact')
+  const ownManifest = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
+  const answered = { writeHead(code, headers) { this.code = code; this.headers = headers }, end(body) { this.body = body } }
+  infoRoute.handler({ method: 'GET' }, answered)
+  eq('the route answers 200', answered.code, 200)
+  eq('the route forbids caching', answered.headers['cache-control'], 'no-store')
+  const payload = JSON.parse(answered.body)
+  eq('it reports this package name', payload.name, ownManifest.name)
+  eq('it reports this package version', payload.version, ownManifest.version)
+  eq('it reports the platform', payload.platform, process.platform)
+  check('it carries the switch states the panel shows', payload.config.tools.wsl === true)
+  check('it carries the effective timeout', 'commandTimeoutMs' in payload.config)
+  check('it carries no filesystem paths',
+    !JSON.stringify(payload).includes(process.cwd()),
+    JSON.stringify(payload).slice(0, 160))
+  const refusedInfo = { writeHead(code) { this.code = code }, end() {} }
+  infoRoute.handler({ method: 'POST' }, refusedInfo)
+  eq('a non-GET is refused with 405', refusedInfo.code, 405)
 
   console.log('\nwsl: timeout')
   const timedOut = await tools.wsl.execute({ command: 'sleep 5', description: 'slow', timeoutMs: 900 })

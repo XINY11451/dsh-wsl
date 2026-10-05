@@ -1,0 +1,14 @@
+# Issue chooser configuration.
+#
+# Blank issues are off on purpose: the two templates ask for the environment once,
+# which is the difference between a report that can be reproduced and a round trip.
+# Anything that is not a defect or a concrete request belongs in Discussions, and
+# the first contact link below is the fastest way to get there.
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 提问与一般讨论 / Questions and general discussion
+    url: https://github.com/XINY11451/dsh-wsl/discussions
+    about: 用法问题、想法、经验分享请走 Discussions；缺陷与明确需求才开 Issue。/ Usage questions and ideas belong in Discussions; Issues are for defects and concrete requests.
+  - name: 🧭 该去哪儿反馈 / Where to report what
+    url: https://github.com/XINY11451/dsh-wsl/blob/main/SUPPORT.md
+    about: 插件问题、DSH 本体问题、市场界面问题、收录问题，各自该发到哪个仓库。/ Which repository takes plugin bugs, DSH itself, the market UI, and catalog listings.

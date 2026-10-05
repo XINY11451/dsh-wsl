@@ -21,6 +21,8 @@
 // A configuration change is a mount, not something a running session re-reads:
 // every switch below is consulted once, in `apply`.
 
+import { readFileSync } from 'node:fs'
+
 import { resolveConfig } from './lib/config.js'
 import { pickSchemaBuilder } from './lib/schema.js'
 import { createRunner } from './lib/runner.js'
@@ -92,6 +94,60 @@ export const Config = Schema?.object({
   timeoutMs: Schema.number().default(0).description('默认命令超时毫秒数；0 表示用内置默认（也可用 DSH_WSL_TIMEOUT_MS）。').volatile(),
 }).description('dsh-wsl 的功能开关与默认值。')
 
+/**
+ * The read-only route the browser half fetches for 「复制插件信息」. Namespaced under
+ * the published package name so it cannot collide with another plugin's route.
+ */
+const INFO_ROUTE = '/dsh-wsl-tool/info'
+
+/** Read this package's own manifest once; a broken manifest must not break the route. */
+let manifestCache
+function readManifest() {
+  if (manifestCache !== undefined) return manifestCache
+  try {
+    manifestCache = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+  } catch {
+    manifestCache = null
+  }
+  return manifestCache
+}
+
+/**
+ * This plugin's own facts, as the panel copies them out.
+ *
+ * The version comes from the manifest next to this file rather than from a string
+ * written here, so a release cannot forget to update it. Everything else is the
+ * effective configuration — the same resolved object the tools read — so the copied
+ * block cannot disagree with the running plugin.
+ *
+ * No paths, host names or credentials: this route is served by the local web server
+ * and a browser (or anything else on the machine) can fetch it.
+ */
+function selfInfo(config) {
+  const manifest = readManifest()
+  const repository = typeof manifest?.repository?.url === 'string'
+    ? manifest.repository.url.replace(/^git\+/, '')
+    : null
+  return {
+    name: manifest?.name ?? 'dsh-wsl-tool',
+    version: manifest?.version ?? null,
+    repository,
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    config: {
+      tools: { ...config.tools },
+      backgroundJobs: config.backgroundJobs,
+      translatePaths: config.translatePaths,
+      startInSessionWorkspace: config.startInSessionWorkspace,
+      dangerGuard: config.dangerGuard,
+      distro: config.distro,
+      commandTimeoutMs: config.commandTimeoutMs,
+      maxOutputBytes: config.maxOutputBytes,
+    },
+  }
+}
+
 export function apply(ctx, settings = {}) {
   // Resolved once per mount. Behaviour reads this object at call time, so the
   // volatile-update hook below can change it in place without remounting.
@@ -103,6 +159,46 @@ export function apply(ctx, settings = {}) {
   if (config.tools.wsl) ctx.tools.register(createWslTool({ ctx, config, runner }))
   if (config.tools.path) ctx.tools.register(createWslPathTool({ config, runner }))
   if (config.tools.env) ctx.tools.register(createWslEnvTool({ config, runner }))
+
+  // ---------------------------------------------------------------- self info
+  //
+  // The panel's 「复制插件信息」 needs facts this half already has and the browser
+  // half cannot know: the package name and version (read from this plugin's own
+  // manifest, so a release never has to edit a string) and the effective
+  // configuration. It is published on a read-only route the browser can fetch,
+  // namespaced so it cannot collide, and it deliberately carries no paths, host
+  // names or credentials — only versions, platform and the switch states the panel
+  // already shows.
+  try {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['webServer'], (inner) => {
+        const webServer = inner.webServer
+        if (webServer === undefined || webServer === null || typeof webServer.register !== 'function') return
+        const disposer = webServer.register({
+          kind: 'exact',
+          path: INFO_ROUTE,
+          handler: (request, response) => {
+            if (request.method !== 'GET') {
+              response.writeHead(405, { allow: 'GET' })
+              response.end()
+              return
+            }
+            response.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              // A copied block must describe this moment, not a cached one.
+              'cache-control': 'no-store',
+            })
+            response.end(JSON.stringify(selfInfo(config)))
+          },
+        })
+        if (typeof inner.effect === 'function') {
+          inner.effect(() => disposer, 'dsh-wsl-tool: self-info route')
+        }
+      })
+    }
+  } catch (error) {
+    console.warn('dsh-wsl-tool: could not publish the self-info route', error)
+  }
 
   // A volatile edit is written into the same object the loader handed us and then
   // announced, so re-resolving in place is what makes the behaviour switches

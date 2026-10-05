@@ -40,9 +40,19 @@ check('it never asks for a service by bare global', !/\bself\./.test(source))
 check('it hands the loader this package id', /id:\s*'dsh-wsl-tool'/.test(source))
 
 const loaded = []
+// What the feedback entry copies, recorded from the clipboard stub the panel uses.
+const copiedTexts = []
 const context = createContext({
   window: { __ModuleLoader__: { load: (mod) => loaded.push(mod) } },
   console: silent,
+  navigator: {
+    clipboard: {
+      writeText: (text) => {
+        copiedTexts.push(text)
+        return Promise.resolve()
+      },
+    },
+  },
 })
 runInContext(source, context, { filename: clientPath })
 eq('the loader received exactly one module', loaded.length, 1)
@@ -251,6 +261,103 @@ const unsetPaths = (unsetBatches[0]?.batch ?? [])
 eq('the batch covers every overridden path', unsetPaths.join(','), 'dangerGuard,tools.wsl')
 eq('the reset is fenced by the snapshot revision', unsetBatches[0]?.revision, 7)
 check('the reset reports success', resetSettled === true, String(resetSettled))
+
+// The feedback entry: one place, a link to GitHub's issue chooser, and a locally
+// assembled block for everyone who cannot reach GitHub — the plugin itself sends
+// nothing, so the copied text is the whole contract.
+console.log('\nfeedback entry')
+eq('the panel offers exactly one feedback entry',
+  found.filter((node) => node.props?.children === '意见反馈 / 提升建议').length, 1)
+const feedbackLinks = found.filter((node) => node.type === 'a' && typeof node.props?.href === 'string')
+eq('it links to the issue chooser', feedbackLinks.map((node) => node.props.href).join(','),
+  'https://github.com/XINY11451/dsh-wsl/issues/new/choose')
+eq('the link opens outside the app', feedbackLinks[0]?.props.target, '_blank')
+const copyButton = found.find((node) => node.props?.children === '复制插件信息')
+check('it offers a copy control', copyButton !== undefined)
+// The submission guide sits beside the button, inside the panel, because that is
+// where the question "where does this go" is asked.
+const guideItems = found.filter((node) => node.type === 'li' && typeof node.props?.children === 'string')
+for (const [name, needle] of [
+  ['a title convention', '标题写清现象'],
+  ['the three body parts', '正文写三段'],
+  ['where to paste the copied block', '「补充」栏直接粘上面复制的内容'],
+  ['the routing to other repositories', 'SUPPORT.md'],
+  ['the public-issue warning', 'Issue 是公开的'],
+]) {
+  check(`the guide mentions ${name}`, guideItems.some((node) => node.props.children.includes(needle)))
+}
+let copyThrew = null
+try {
+  await copyButton.props.onClick()
+} catch (error) {
+  copyThrew = error
+}
+check('copying does not throw', copyThrew === null, String(copyThrew))
+eq('the clipboard received exactly one block', copiedTexts.length, 1)
+const feedbackBlock = copiedTexts[0] ?? ''
+for (const [name, needle] of [
+  ['the self-info header', '### 插件信息（由插件自己读出，可直接粘贴）'],
+  ['an honest note when the version is unreadable', '版本：未能读取'],
+  ['the panel switch states', '### 面板里的开关'],
+  ['the guard row as rendered', '- 危险命令守卫：开'],
+  ['the workdir row as rendered', '- 默认跟随会话工作区：关'],
+  ['a line for the DSH version', '- DSH：'],
+]) {
+  check(`the copied block contains ${name}`, feedbackBlock.includes(needle), feedbackBlock.slice(0, 120))
+}
+// No clipboard API: the same control must degrade, not throw.
+context.navigator = undefined
+let manualThrew = null
+try {
+  await copyButton.props.onClick()
+} catch (error) {
+  manualThrew = error
+}
+check('a browser without a clipboard API still does not throw', manualThrew === null, String(manualThrew))
+eq('nothing else was copied in that case', copiedTexts.length, 1)
+// With the Host half answering, the block carries the plugin's own facts — this is
+// what "the plugin reads its own information" means in practice.
+context.navigator = {
+  clipboard: {
+    writeText: (text) => {
+      copiedTexts.push(text)
+      return Promise.resolve()
+    },
+  },
+}
+const askedUrls = []
+context.fetch = (url) => {
+  askedUrls.push(String(url))
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({
+      name: 'dsh-wsl-tool',
+      version: '9.9.9',
+      repository: 'https://github.com/XINY11451/dsh-wsl.git',
+      node: 'v24.0.0',
+      platform: 'win32',
+      arch: 'x64',
+      config: { tools: { wsl: true }, distro: 'Ubuntu-22.04', commandTimeoutMs: 600000 },
+    }),
+  })
+}
+try {
+  await copyButton.props.onClick()
+} catch (error) {
+  check('the copy control survives the Host answer', false, String(error))
+}
+eq('it asks the Host half on the documented route', askedUrls.join(','), '/dsh-wsl-tool/info')
+eq('the clipboard received the second block', copiedTexts.length, 2)
+const hostBlock = copiedTexts[1] ?? ''
+for (const [name, needle] of [
+  ['the version read from the manifest', 'dsh-wsl-tool 9.9.9'],
+  ['the repository', 'https://github.com/XINY11451/dsh-wsl.git'],
+  ['the runtime', 'Node v24.0.0'],
+  ['the effective distro', 'Ubuntu-22.04'],
+  ['the effective timeout', '- 命令超时 timeoutMs：600000 毫秒'],
+]) {
+  check(`the Host answer puts ${name} in the block`, hostBlock.includes(needle), hostBlock.slice(0, 200))
+}
 
 console.log('\ndegradation')
 for (const [name, broken] of [

@@ -1,0 +1,48 @@
+name: 💡 功能建议 / Feature request
+description: 想要一个新能力，或觉得某处可以更好 / Ask for a capability, or suggest something that could work better
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先说清楚你想解决的问题，比先说想加什么命令更有用 —— 实现方式我可能会给出更简单的那个。
+        Lead with the problem you are trying to solve; the implementation may be simpler than the command you have in mind.
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题 / What are you trying to do
+      description: 你现在的做法是什么？卡在哪一步？/ What do you do today, and where does it get stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望它是什么样 / What you would like
+      description: 如果你已经有想法（新参数、新工具、面板开关…）/ Any concrete shape you have in mind (a parameter, a tool, a switch in the panel)
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你试过的替代方案 / Alternatives you tried
+      description: 包括"直接用 pwsh 调 wsl.exe"这类绕法 —— 如果绕法够用，我会照实说 / Including workarounds such as calling `wsl.exe` from `pwsh`; if a workaround is good enough I will say so
+    validations:
+      required: false
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本 / Plugin version
+      description: 面板底部的「复制插件信息」会替你读出来 / Read out by 「复制插件信息」 in the panel
+      placeholder: "1.10.9"
+    validations:
+      required: true
+  - type: checkboxes
+    id: limits
+    attributes:
+      label: 已知边界 / Known limits
+      description: 这个插件有两条写明的限制（见 README 的 Sandboxing 与 Notes）/ The plugin documents two limits (see Sandboxing and Notes in the README)
+      options:
+        - label: 我读过插件说明里的两条限制（WSL 调用位于 DSH 沙箱层之下；Windows 盘上仍是 Windows 文件系统语义）/ I have read the two documented limits
+          required: false
