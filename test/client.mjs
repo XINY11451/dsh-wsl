@@ -308,7 +308,7 @@ for (const [name, needle] of [
   ['an honest note when the version is unreadable', '版本：未能读取'],
   ['the panel switch states', '### 面板里的开关'],
   ['the guard row as rendered', '- 危险命令守卫：开'],
-  ['the workdir row as rendered', '- 默认跟随会话工作区：关'],
+  ['the workdir row as rendered', '- 默认跟随会话工作区：开'],
   ['a line for the DSH version', '- DSH：'],
 ]) {
   check(`the copied block contains ${name}`, feedbackBlock.includes(needle), feedbackBlock.slice(0, 120))

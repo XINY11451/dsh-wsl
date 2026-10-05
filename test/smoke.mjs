@@ -504,7 +504,13 @@ async function unitTests() {
   eq('environment overrides the window', resolveConfig({ DSH_WSL_MAX_OUTPUT_BYTES: '4096' }).maxOutputBytes, 4_096)
   eq('DSH_WSL_DISTRO pins a distro', resolveConfig({ DSH_WSL_DISTRO: ' Debian ' }).distro, 'Debian')
   eq('a blank DSH_WSL_DISTRO means the system default', resolveConfig({ DSH_WSL_DISTRO: '   ' }).distro, null)
-  eq('the default workdir is the Linux home', resolveConfig({}).defaultWorkdir, '~')
+  // Was "the default workdir is the Linux home": follow-session is ON by default now,
+  // so the untouched default is the session's own directory (null reads as the process
+  // cwd), and `~` is what the layer below says when the switch is off. The old
+  // expectation still holds for that layer, which is asserted further down.
+  eq('the default workdir follows the session', resolveConfig({}).defaultWorkdir, null)
+  eq('the default workdir is the Linux home when follow-session is off',
+    resolveConfig({}, { startInSessionWorkspace: false }).defaultWorkdir, '~')
   // The plugin's own configuration (written by the sidebar panel) is the most
   // specific layer, but a switch left at its default must let the environment
   // through: a user who never opened the panel still gets DSH_WSL_WORKDIR.
@@ -527,10 +533,25 @@ async function unitTests() {
     Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true')
   eq('a partial tools object leaves the other switches alone',
     resolveConfig({}, { tools: { env: false } }).tools.env, false)
-  eq('workdir "home" spells the tilde', resolveConfig({ DSH_WSL_WORKDIR: 'home' }).defaultWorkdir, '~')
-  eq('workdir "session" means the process cwd', resolveConfig({ DSH_WSL_WORKDIR: 'session' }).defaultWorkdir, null)
+  // The environment layer is only reachable with follow-session switched off: it is ON
+  // by default now, and these two magic words describe the layer beneath it.
+  eq('workdir "home" spells the tilde',
+    resolveConfig({ DSH_WSL_WORKDIR: 'home' }, { startInSessionWorkspace: false }).defaultWorkdir, '~')
+  eq('workdir "session" means the process cwd',
+    resolveConfig({ DSH_WSL_WORKDIR: 'session' }, { startInSessionWorkspace: false }).defaultWorkdir, null)
   eq('any other workdir is an explicit default path',
-    resolveConfig({ DSH_WSL_WORKDIR: 'D:\\proj' }).defaultWorkdir, 'D:\\proj')
+    resolveConfig({ DSH_WSL_WORKDIR: 'D:\\proj' }, { startInSessionWorkspace: false }).defaultWorkdir, 'D:\\proj')
+  // The contract that replaced it: follow-session is the default, an explicitly
+  // configured Linux directory outranks it, and the switch still works both ways.
+  eq('follow-session is on by default', resolveConfig({}, {}).defaultWorkdir, null)
+  eq('the follow-session switch reports its default',
+    resolveConfig({}, {}).startInSessionWorkspace, true)
+  eq('a configured Linux directory wins over follow-session',
+    resolveConfig({}, { workdir: '/mnt/d/proj' }).defaultWorkdir, '/mnt/d/proj')
+  eq('turning follow-session off with nothing configured falls back to home',
+    resolveConfig({}, { startInSessionWorkspace: false }).defaultWorkdir, '~')
+  eq('an empty configured directory still follows the session',
+    resolveConfig({}, { workdir: '   ' }).defaultWorkdir, null)
 
   // A per-call deadline is capped like the platform shell tools cap theirs.
   eq('the timeout ceiling has a default', resolveConfig({}).maxCommandTimeoutMs, 86_400_000)
@@ -937,6 +958,10 @@ async function toolTests(tools, shim) {
     // which is why a process.env-only implementation forwards nothing.
     const forwardingTools = makeCtx(shim, {
       jobs,
+      // These assertions are about the env forwarding layer, so the workdir layer is
+      // pinned: follow-session is ON by default now, which would run the command from
+      // the session directory instead of `~` and the fake shim answers by cwd.
+      settings: { startInSessionWorkspace: false },
       shellEnv: {
         collect: (exec) => ({
           DSH_SESSION_ID: exec?.agent?.session?.header?.id,
