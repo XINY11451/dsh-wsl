@@ -205,20 +205,25 @@ consequences worth remembering:
   (as here), accepting the empty slot until the rebuild.
 
 The preview is rendered from `assets/market-preview.html` (the editable source of
-truth) with headless Edge — straight to the filename the README and `screenshots.json`
-both use, so there is no copy step that can drift:
+truth) with headless Edge, under a **new filename each redesign** — the name is what
+defeats the caches, so the render target changes with the design:
 
 ```powershell
+$out = Join-Path $PWD 'assets\market-preview-<new>.png'
+$url = 'file:///' + ($PWD.Path -replace '\\','/') + '/assets/market-preview.html'
 & 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new `
   --disable-gpu --hide-scrollbars --force-device-scale-factor=2 `
-  --window-size=1280,800 --virtual-time-budget=3000 `
-  --user-data-dir="$env:TEMP\edge-shot" `
-  --screenshot="assets\market-preview.png" "file:///$PWD/assets/market-preview.html"
+  --window-size=1280,800 --virtual-time-budget=4000 `
+  --user-data-dir="$env:TEMP\edge-shot" --screenshot="$out" $url
 ```
 
-It renders 2560×1600 (1280×800 at 2×) in a few seconds with no browser window. The
-`--user-data-dir` keeps it away from the user's real Edge profile. Edit the HTML,
-re-run, and commit the PNG: no build step, no design tool.
+Two things the renderer demands: `--screenshot` must be an **absolute** path (Edge
+resolves it against its own working directory, and a relative one fails with
+"Failed to write file … 系统找不到指定的路径"), and `--headless=new` needs a moment
+before the file appears. It renders 2560×1600 (1280×800 at 2×) in a few seconds with
+no browser window; `--user-data-dir` keeps it away from the user's real Edge profile.
+Edit the HTML, re-run, commit the PNG, and point `screenshots.json` plus the README
+embed at the new name: no build step, no design tool.
 
 ## Things that bite
 

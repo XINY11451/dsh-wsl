@@ -22,8 +22,8 @@
     background: radial-gradient(1100px 520px at 12% -12%, #1b2740 0%, var(--bg) 62%), var(--bg);
     color: var(--text);
     font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
-    padding: 40px 44px;
-    display: flex; flex-direction: column; gap: 22px;
+    padding: 38px 44px 30px;
+    display: flex; flex-direction: column; gap: 20px;
   }
   header { display: flex; align-items: flex-start; justify-content: space-between; }
   .title { display: flex; align-items: center; gap: 14px; }
@@ -42,40 +42,43 @@
     border-radius: 999px; padding: 5px 11px; font-size: 12px; color: var(--dim);
   }
   .badge.on { color: var(--accent-2); border-color: #2b5c4c; background: #10231d; }
-  main { display: grid; grid-template-columns: 1fr 430px; gap: 26px; flex: 1; min-height: 0; }
-  .col { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
-  section .head {
+  main { display: grid; grid-template-columns: 1fr 420px; gap: 24px; flex: 1; min-height: 0; }
+  .head {
     font-size: 12px; letter-spacing: 2px; color: var(--dim-2);
-    text-transform: uppercase; margin-bottom: 9px;
+    text-transform: uppercase; margin-bottom: 10px;
   }
-  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .card {
+  ul.features { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 9px 14px; }
+  ul.features li {
     background: linear-gradient(180deg, var(--panel), #121721);
-    border: 1px solid var(--line); border-radius: 10px; padding: 12px 13px;
+    border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px;
   }
-  .card b { font-size: 14px; display: block; }
-  .card code {
-    font-family: Consolas, "Cascadia Mono", monospace; font-size: 12.5px;
+  ul.features b { font-size: 13.5px; display: block; }
+  ul.features p { color: var(--dim); font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+  code {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
     color: var(--accent-2); background: #0e1a18; border: 1px solid #1e3d36;
     border-radius: 5px; padding: 1px 5px;
   }
-  .card p { color: var(--dim); font-size: 12px; margin-top: 6px; line-height: 1.55; }
-  .card.wide { grid-column: 1 / -1; }
-  .limits { border-color: #3a2f1d; background: linear-gradient(180deg, #1b1710, #14120c); }
-  .limits b { color: var(--warn); }
+  .limit {
+    margin-top: 12px; border: 1px solid #3a2f1d; border-radius: 9px;
+    background: linear-gradient(180deg, #1b1710, #14120c); padding: 10px 12px;
+    font-size: 11.5px; line-height: 1.55; color: #d9c9a8;
+  }
+  .limit b { color: var(--warn); font-size: 12.5px; }
   .panel {
     background: linear-gradient(180deg, #151b25, #10151d);
-    border: 1px solid var(--line); border-radius: 14px; padding: 15px 16px;
-    display: flex; flex-direction: column; gap: 11px; min-height: 0;
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px 15px;
+    display: flex; flex-direction: column; gap: 10px; min-height: 0;
   }
   .panel .bar { display: flex; justify-content: space-between; align-items: center; }
   .panel .bar .t { font-size: 15px; font-weight: 600; }
   .panel .bar .r { font-size: 11.5px; color: var(--accent); border: 1px solid #24406e; background: #101b2e; border-radius: 6px; padding: 3px 8px; }
-  .panel .note { font-size: 11.5px; color: var(--dim-2); }
+  .group { display: flex; flex-direction: column; gap: 8px; }
+  .group + .group { border-top: 1px dashed var(--line); padding-top: 9px; }
   .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   .row .l { min-width: 0; }
   .row .l b { font-size: 13px; font-weight: 600; display: block; }
-  .row .l p { font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.5; }
+  .row .l p { font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.45; }
   .sw {
     flex: none; width: 34px; height: 19px; border-radius: 999px;
     background: #263041; position: relative; margin-top: 2px;
@@ -85,13 +88,15 @@
   .sw.on::after { left: 17px; background: #dce8ff; }
   .sw.risk { background: #4a3416; }
   .sw.risk::after { left: 17px; background: #f0c37a; }
-  .group { display: flex; flex-direction: column; gap: 9px; }
-  .group + .group { border-top: 1px dashed var(--line); padding-top: 10px; }
-  .reset { display: flex; justify-content: flex-end; align-items: center; gap: 8px; font-size: 11.5px; color: var(--dim); }
-  .reset .pill { border: 1px solid #24406e; background: #101b2e; color: #b9cdf5; border-radius: 6px; padding: 3px 8px; }
+  .field {
+    flex: none; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px;
+    color: var(--text); background: #0b0f15; border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; margin-top: 1px;
+  }
+  .field.empty { color: var(--dim-2); }
   footer {
     display: flex; justify-content: space-between; align-items: center;
-    border-top: 1px solid var(--line); padding-top: 14px;
+    border-top: 1px solid var(--line); padding-top: 12px;
     color: var(--dim-2); font-size: 12px;
   }
   footer code {
@@ -107,61 +112,75 @@
       <div class="mark">W&#8203;SL</div>
       <div>
         <h1>DSH <span>×</span> WSL</h1>
-        <div class="sub">在 Windows 上执行 Linux 命令 —— 命令执行层基本对齐原生 Linux DSH</div>
+        <div class="sub">在 Windows 上执行 Linux 命令、互转路径、体检 WSL 环境</div>
       </div>
     </div>
     <div class="badges">
+      <div class="badge on">无需选择模式</div>
       <div class="badge on">左侧栏开关面板</div>
-      <div class="badge">可选：侧边栏 WSL 终端</div>
-      <div class="badge">零依赖</div>
+      <div class="badge">可选：WSL 终端</div>
     </div>
   </header>
 
   <main>
-    <div class="col">
-      <section>
-        <div class="head">三个工具</div>
-        <div class="cards">
-          <div class="card">
-            <b><code>wsl</code> 命令执行</b>
-            <p>每次调用一个全新 shell；可喂 stdin、可设超时；退出码 / 信号 / 截断都如实回传。</p>
-          </div>
-          <div class="card">
-            <b><code>wsl-path</code> 路径互转</b>
-            <p>Windows 路径 ↔ <code>/mnt/...</code>、<code>\\wsl.localhost\</code> 双向转换。</p>
-          </div>
-          <div class="card">
-            <b><code>wsl-env</code> 能力体检</b>
-            <p>发行版、内核、systemd、cgroup、GPU 直通、docker、挂载盘与两侧配置一次看清。</p>
-          </div>
-          <div class="card">
-            <b>长任务后台跑</b>
-            <p><code>runInBackground</code> 交给内置 job 工具读回 / 中止，前台超时不再拖死。</p>
-          </div>
-          <div class="card wide">
-            <b>安全与可观测</b>
-            <p>危险命令守卫（删除 / 分区 / 关机需显式放行）；输出按流上限截断，超限会自动落盘完整文件并提供路径。</p>
-          </div>
-        </div>
-      </section>
+    <div>
+      <div class="head">功能</div>
+      <ul class="features">
+        <li>
+          <b><code>wsl</code> 执行 Linux 命令</b>
+          <p>每次调用一个全新 shell，在 WSL 里跑命令并回传结果。</p>
+        </li>
+        <li>
+          <b><code>wsl-path</code> 路径互转</b>
+          <p>Windows 路径 ↔ <code>/mnt/...</code>、<code>\\wsl.localhost\</code>。</p>
+        </li>
+        <li>
+          <b><code>wsl-env</code> 环境体检</b>
+          <p>发行版、内核、systemd、cgroup、docker、GPU、挂载盘。</p>
+        </li>
+        <li>
+          <b>stdin 输入</b>
+          <p>把内容喂给命令，不再只能拼到命令行里。</p>
+        </li>
+        <li>
+          <b>退出码 · 信号 · 超时</b>
+          <p>三种结束方式各自如实标记，超时不会静默挂住。</p>
+        </li>
+        <li>
+          <b>输出截断落盘</b>
+          <p>超出流上限时截断，并把完整输出写进文件、给出路径。</p>
+        </li>
+        <li>
+          <b>后台作业</b>
+          <p><code>runInBackground</code> 转成后台任务，用 <code>job_output</code> / <code>job_kill</code> 读回或中止。</p>
+        </li>
+        <li>
+          <b>危险命令守卫</b>
+          <p>删除、分区、关机等必须显式放行 <code>allowDangerous</code>。</p>
+        </li>
+        <li>
+          <b>自动路径转换</b>
+          <p>命令里的 Windows 路径自动转成 <code>/mnt/...</code>。</p>
+        </li>
+        <li>
+          <b>工作目录策略</b>
+          <p>默认跟随会话工作区，也可固定一个 Linux 目录。</p>
+        </li>
+        <li>
+          <b>左侧栏开关面板</b>
+          <p>每个能力一个开关，批量操作只有一处「全部恢复默认」。</p>
+        </li>
+        <li>
+          <b>可选：WSL 终端</b>
+          <p>把侧边栏「新建终端」指向 WSL（真 PTY），默认不开。</p>
+        </li>
+      </ul>
 
-      <section>
-        <div class="head">如实说明的限制</div>
-        <div class="cards">
-          <div class="card wide limits">
-            <b>两条边界</b>
-            <p>① WSL 调用发生在 DSH 沙箱层之下，文件策略约束不到它；② 项目放在 Windows 盘时仍是 Windows 文件系统语义（9p：慢、无 inotify、权限位不生效）。</p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div class="head">一次真实调用</div>
-        <div class="card wide">
-          <b><code>wsl</code> · <code>wsl "cd /mnt/d/proj &amp;&amp; npm test"</code></b>
-          <p>返回 stdout / stderr / exitCode，并标记信号、超时与截断；长任务加 <code>runInBackground: true</code> 拿 jobId，用 <code>job_output</code> / <code>job_kill</code> 读回或中止。可选一条 patch 还能把桌面版「新建终端」指向 WSL（真 PTY，默认不开）。</p>
-        </div>
-      </section>
+      <div class="limit">
+        <b>边界（如实说明）</b><br>
+        WSL 调用发生在 DSH 沙箱层之下，文件策略约束不到它；项目放在 Windows 盘时仍是 Windows
+        文件系统语义（9p：慢、无 inotify、权限位不生效）。
+      </div>
     </div>
 
     <div class="panel">
@@ -169,35 +188,34 @@
         <div class="t">WSL</div>
         <div class="r">全部恢复默认</div>
       </div>
-      <div class="note">工具开关下次启动生效；其余开关即时生效。</div>
 
       <div class="group">
         <div class="row">
-          <div class="l"><b>wsl 命令执行</b><p>注册 <code>wsl</code> 工具：在 WSL 里执行 Linux 命令</p></div>
+          <div class="l"><b>wsl 命令执行</b><p>注册 <code>wsl</code>：执行 Linux 命令</p></div>
           <div class="sw on"></div>
         </div>
         <div class="row">
-          <div class="l"><b>wsl-path 路径转换</b><p>注册 <code>wsl-path</code> 工具：路径互转</p></div>
+          <div class="l"><b>wsl-path 路径转换</b><p>注册 <code>wsl-path</code>：路径互转</p></div>
           <div class="sw on"></div>
         </div>
         <div class="row">
-          <div class="l"><b>wsl-env 能力体检</b><p>注册 <code>wsl-env</code> 工具：汇总 WSL 能力</p></div>
+          <div class="l"><b>wsl-env 能力体检</b><p>注册 <code>wsl-env</code>：汇总 WSL 能力</p></div>
           <div class="sw on"></div>
         </div>
       </div>
 
       <div class="group">
         <div class="row">
-          <div class="l"><b>后台任务</b><p>允许 <code>runInBackground</code>，由 job 工具读回</p></div>
+          <div class="l"><b>后台任务</b><p>允许 <code>runInBackground</code></p></div>
           <div class="sw on"></div>
         </div>
         <div class="row">
-          <div class="l"><b>自动转换路径</b><p>命令里的 Windows 路径自动转成 <code>/mnt/...</code></p></div>
+          <div class="l"><b>自动转换路径</b><p>命令里的 Windows 路径自动转 <code>/mnt/...</code></p></div>
           <div class="sw on"></div>
         </div>
         <div class="row">
           <div class="l"><b>默认跟随会话工作区</b><p>未传 workdir 时从会话目录开始</p></div>
-          <div class="sw"></div>
+          <div class="sw on"></div>
         </div>
         <div class="row">
           <div class="l"><b>危险命令守卫</b><p>删除、分区、关机等必须显式放行</p></div>
@@ -205,13 +223,22 @@
         </div>
       </div>
 
-      <div class="reset"><span>已覆盖项可一键清除</span><span class="pill">每行只留「已覆盖」标记</span></div>
+      <div class="group">
+        <div class="row">
+          <div class="l"><b>Linux 默认工作目录</b><p>固定目录，留空则跟随会话</p></div>
+          <div class="field">/mnt/d/project</div>
+        </div>
+        <div class="row">
+          <div class="l"><b>WSL 终端启动路径</b><p>侧边栏终端的起始目录</p></div>
+          <div class="field empty">留空</div>
+        </div>
+      </div>
     </div>
   </main>
 
   <footer>
     <div>安装：<code>dsh plugin --profile web add dsh-wsl-tool</code></div>
-    <div class="right">github.com/XINY11451/dsh-wsl &nbsp;·&nbsp; dsh-wsl-tool</div>
+    <div class="right">适用于 DSH ≥0.1.7-rc.2 &nbsp;·&nbsp; github.com/XINY11451/dsh-wsl</div>
   </footer>
 </body>
 </html>
