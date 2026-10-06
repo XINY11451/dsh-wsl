@@ -47,13 +47,13 @@
     font-size: 12px; letter-spacing: 2px; color: var(--dim-2);
     text-transform: uppercase; margin-bottom: 10px;
   }
-  ul.features { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 9px 14px; }
+  ul.features { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; }
   ul.features li {
     background: linear-gradient(180deg, var(--panel), #121721);
-    border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px;
+    border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px;
   }
-  ul.features b { font-size: 13.5px; display: block; }
-  ul.features p { color: var(--dim); font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+  ul.features b { font-size: 13px; display: block; }
+  ul.features p { color: var(--dim); font-size: 11px; margin-top: 3px; line-height: 1.4; }
   code {
     font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
     color: var(--accent-2); background: #0e1a18; border: 1px solid #1e3d36;
@@ -112,7 +112,7 @@
       <div class="mark">W&#8203;SL</div>
       <div>
         <h1>DSH <span>×</span> WSL</h1>
-        <div class="sub">在 Windows 上执行 Linux 命令、互转路径、体检 WSL 环境</div>
+        <div class="sub">在 Windows 上执行 Linux 命令、互转路径、诊断环境与项目</div>
       </div>
     </div>
     <div class="badges">
@@ -128,7 +128,7 @@
       <ul class="features">
         <li>
           <b><code>wsl</code> 执行 Linux 命令</b>
-          <p>每次调用一个全新 shell，在 WSL 里跑命令并回传结果。</p>
+          <p>每次全新 shell，在 WSL 里跑命令并回传结果。</p>
         </li>
         <li>
           <b><code>wsl-path</code> 路径互转</b>
@@ -136,23 +136,39 @@
         </li>
         <li>
           <b><code>wsl-env</code> 环境体检</b>
-          <p>发行版、内核、systemd、cgroup、docker、GPU、挂载盘。</p>
+          <p>发行版、内核、systemd、docker、GPU、挂载盘。</p>
+        </li>
+        <li>
+          <b><code>wsl-doctor</code> 项目体检</b>
+          <p>对照项目清单诊断缺什么，点明"其实是 Windows 的"命令。</p>
+        </li>
+        <li>
+          <b><code>wsl-bootstrap</code> 补装工具链</b>
+          <p>按固定配方补装缺失工具链，先出计划（默认关）。</p>
+        </li>
+        <li>
+          <b>管理员模式（root）</b>
+          <p>开关打开后 apt、systemctl 可按需以 root 执行。</p>
+        </li>
+        <li>
+          <b>会话事实转发</b>
+          <p>会话 id、shell、HOME 自动带进发行版。</p>
         </li>
         <li>
           <b>stdin 输入</b>
-          <p>把内容喂给命令，不再只能拼到命令行里。</p>
+          <p>把内容喂给命令，不必拼进命令行。</p>
         </li>
         <li>
           <b>退出码 · 信号 · 超时</b>
-          <p>三种结束方式各自如实标记，超时不会静默挂住。</p>
+          <p>三种结束方式各自如实标记，不静默挂住。</p>
         </li>
         <li>
           <b>输出截断落盘</b>
-          <p>超出流上限时截断，并把完整输出写进文件、给出路径。</p>
+          <p>超出上限即截断，并把完整输出写进文件、给出路径。</p>
         </li>
         <li>
           <b>后台作业</b>
-          <p><code>runInBackground</code> 转成后台任务，用 <code>job_output</code> / <code>job_kill</code> 读回或中止。</p>
+          <p><code>runInBackground</code> 转后台，由 job 工具读回或中止。</p>
         </li>
         <li>
           <b>危险命令守卫</b>
@@ -172,7 +188,7 @@
         </li>
         <li>
           <b>可选：WSL 终端</b>
-          <p>侧边栏「新建终端」的列表里多一个 WSL（真 PTY），其余 shell 仍可选；默认不开。</p>
+          <p>侧边栏「新建终端」多一个 WSL 选项（真 PTY），默认不开。</p>
         </li>
       </ul>
 
@@ -202,6 +218,14 @@
           <div class="l"><b>wsl-env 能力体检</b><p>注册 <code>wsl-env</code>：汇总 WSL 能力</p></div>
           <div class="sw on"></div>
         </div>
+        <div class="row">
+          <div class="l"><b>wsl-doctor 项目体检</b><p>注册 <code>wsl-doctor</code>：对照项目清单诊断（只读）</p></div>
+          <div class="sw on"></div>
+        </div>
+        <div class="row">
+          <div class="l"><b>wsl-bootstrap 安装工具链</b><p>允许在发行版里补装工具链（默认关）</p></div>
+          <div class="sw"></div>
+        </div>
       </div>
 
       <div class="group">
@@ -220,6 +244,10 @@
         <div class="row">
           <div class="l"><b>危险命令守卫</b><p>删除、分区、关机等必须显式放行</p></div>
           <div class="sw on risk"></div>
+        </div>
+        <div class="row">
+          <div class="l"><b>管理员模式（root）</b><p>允许 <code>asRoot</code>，以 root 执行单次调用（默认关）</p></div>
+          <div class="sw"></div>
         </div>
       </div>
 

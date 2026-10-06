@@ -11,17 +11,19 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 （见[沙箱边界](#沙箱边界)）；项目放在 Windows 盘上时仍是 **Windows** 的文件系统语义——没有 POSIX
 权限位、文件名大小写不敏感、收不到文件变更通知——速度也低一个数量级（见[注意事项](#注意事项)）。
 
-![功能清单与左侧栏开关面板](assets/market-preview-features-2.png)
+![功能清单与左侧栏开关面板](assets/market-preview-features-3.png)
 
 ## 工具
 
-插件注册三个工具：
+插件注册五个工具（后两个可单独关掉，其中 `wsl-bootstrap` **默认关**）：
 
 | 工具 | 用途 |
 |---|---|
 | `wsl` | 执行 Linux 命令，返回带退出码、超时与截断标记的 `stdout`/`stderr` |
 | `wsl-path` | 通过 `wslpath` 在 Windows 与 WSL 路径间互转 |
 | `wsl-env` | 汇总 WSL 环境（发行版、内核、CPU、内存、磁盘） |
+| `wsl-doctor` | 对照项目清单与发行版实际能力，指出缺什么——包括那些其实是 Windows 二进制的命令。只读 |
+| `wsl-bootstrap` | 按固定配方在发行版里补装缺失的工具链，先出计划再动手 |
 
 ### `wsl`
 
@@ -78,6 +80,82 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 发行版不存在则直接报错，而不是给出一份残缺答案。注意 `wsl --version` 输出是**本地化**的，
 因此其标签按启动器原样透传、不按名称解析；Direct3D/MSRDC/DXCore 版本作为噪声被省略。
 
+### `wsl-doctor`
+
+回答一个项目自己的 README 答不了的问题：**这份代码指望的工具链，在这套发行版里真的能用吗？**
+它读取目录里的清单（`package.json` 与各种 lockfile、`.nvmrc`、`tsconfig.json`、`Cargo.toml`、
+`go.mod`、`pyproject.toml`、`requirements.txt`、`Dockerfile`、`docker-compose.yml`、`Makefile`、
+`CMakeLists.txt`），然后逐项给出它在 Linux 侧的位置：
+
+```
+distro: Ubuntu-22.04 (system default)
+workspace: /mnt/d/proj (Windows drive mount /mnt/d — builds, installs and git are much slower here; …)
+project: package.json, pnpm-lock.yaml
+
+needs (from the project): node, npm, pnpm
+  MISSING node — not on PATH in this distribution (from package.json)
+  WINDOWS npm — resolves to /mnt/c/Program Files/nodejs/npm, a Windows binary reached through interop; …
+  MISSING pnpm — not on PATH in this distribution (from pnpm-lock.yaml)
+
+usable on the Linux side: python3 3.10.12, gcc 11.4.0, make 4.3, git 2.34.1, curl, rsync, tar, sudo
+Windows binaries on the Linux PATH (interop): npm -> /mnt/c/Program Files/nodejs/npm, npx -> …
+privileges: uid=1000 (xiny) · sudo: requires a password (unusable from a tool call) · root: switched off
+
+next: node, npm are not usable — wsl-bootstrap({ recipes: ["node", "pnpm"] }) installs them …
+```
+
+那行 `WINDOWS` 就是它存在的理由。WSL 会把 Windows 的 `PATH` 接到 Linux 的后面，于是
+`npm` 在一套**根本没有 `node`** 的发行版里"找得到"（本机实测就是
+`/mnt/c/Program Files/nodejs/npm`），模型拿它去跑 Linux 目录时报的错两头都不沾。整体只读、
+开销很小，值得在把失败归咎于命令本身之前先跑一次。可选参数 `workspace`（Linux 目录；默认取
+配置的目录，否则取会话工作区）与 `distro`。
+
+### `wsl-bootstrap`
+
+**在发行版内部**补装缺失的工具链，只认固定配方：`node`（Node.js LTS 装进 `/usr/local`，
+校验 sha256，并启用 corepack）、`pnpm`、`python`（python3 + pip + venv）、`build`
+（build-essential）、`tools`（jq、rsync、curl、git、ca-certificates）。依赖按需带上：
+`pnpm` 会带上 `node`，`curl` 缺失时 `node` 会带上 `tools`。
+
+**它默认关**，且 `dryRun` 默认为 `true`，所以第一次调用只打印计划、什么都不改：
+
+```
+dry run — nothing has been installed (distro Ubuntu-22.04)
+
+already present:
+  python — python3, pip and venv (apt)
+
+to install (python, tools):
+  [tools] apt packages: ca-certificates curl git jq rsync — runs as root inside the distribution
+      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq rsync
+
+apt would report:
+  Inst libjq1 (1.6-2.1ubuntu3.2 Ubuntu:22.04/jammy-updates [amd64])
+  …
+
+run it for real with `dryRun: false`.
+```
+
+所有 apt 配方会**合并成一步**（`apt-get update` 是慢的那一半，每个配方各跑一次看起来就像卡死），
+并附带一条 `apt-get -s` 只读模拟，让计划直接显示 apt 自己会做什么。已经满足的配方会被跳过，
+所以第二次跑很便宜。步骤通过 `wsl -u root` 执行——为什么见下一节——某一步失败即停下并附上
+它的输出末尾。
+
+## 以 root 执行（`asRoot`）
+
+`sudo` 在工具调用里根本用不了：它要密码，而除非你显式喂 stdin，stdin 就是 `/dev/null`。
+WSL 自带答案——`wsl.exe -u root` **免密**（本机实测：`sudo -n` 失败时它照样给出 `uid=0`）——
+于是 `wsl` 工具把它暴露成 `asRoot: true`，由面板里一项开关把关（「管理员模式（root）」，默认关）：
+
+```
+wsl({ command: 'apt-get install -y jq', description: 'install jq', asRoot: true })
+```
+
+授权来自开关而不是参数：开关关着时，`asRoot: true` 会被**明确拒绝并给出开关位置**，而不是
+悄悄降级成你的普通用户——一个要了 root 却拿到权限错误的人，会去错误的地方找原因。每次以 root
+执行的结果都会标注（`[ran as root: wsl -u root]`），转录里说得清发生过什么；危险命令守卫则
+独立生效：`rm -rf` 无论是不是 root 都仍需 `allowDangerous: true`。
+
 ## 安装
 
 发布到 npm 的包名是 **`dsh-wsl-tool`**，不是 `dsh-wsl`：registry 判定 `dsh-wsl` 与既有包
@@ -96,7 +174,7 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
    （依赖名会取本包自身的名字）。
 
 2. 不必再做别的。本包的 `cordis.patch.yml` 会在组合包加载时**自己插入** `tool-wsl` 行
-   （进程级），因此三个工具对所有 agent preset 都可用，无需额外接线。**不需要选择任何模式，
+   （进程级），因此这些工具对所有 agent preset 都可用，无需额外接线。**不需要选择任何模式，
    也不要在 preset 里加任何东西**——左侧栏的 WSL 面板同样是这样出现的。
 
    **不要**再在 preset 里列一遍 `tool-wsl`：DSH 按名字注册工具，第二次注册会直接失败
@@ -105,7 +183,7 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
 3. 重启 DSH。
 
 设置面板是唯一可选的一块：它的表单需要 `@deepseek-ai/schemastery`，多数 profile 已经有了
-（只要装过任何依赖它的插件；没有的话把它加进 profile 的依赖即可）。没有它时，三个工具与
+（只要装过任何依赖它的插件；没有的话把它加进 profile 的依赖即可）。没有它时，工具与
 面板里的「WSL 终端启动路径」照常可用，只是开关不显示 —— 面板会直接说明这一点，不会一直转圈等待。
 
 ## 兼容性
@@ -145,6 +223,9 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | Linux 默认工作目录 | 未传 `workdir` 时使用的固定 Linux 目录（如 `/mnt/d/project`）。填了就优先于上面的开关；清空则回到跟随会话 |
 | WSL 终端启动路径 | 可选的侧边栏终端从哪个目录启动 —— 写进你 **profile patch** 里 `terminal-controller` 那一行的 `--cd <目录>`（见[可选：在侧边栏开一个 WSL 终端](#可选在侧边栏开一个-wsl-终端)）。留空则删掉该参数；当前值也是从这个文件读的 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
+| 管理员模式（root） | `wsl` 是否接受 `asRoot: true`（`wsl -u root`）。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
+| wsl-doctor 项目体检 | 注册 `wsl-doctor` |
+| wsl-bootstrap 安装工具链 | 注册 `wsl-bootstrap`，它可能往发行版里装东西。**默认关**，且每次调用还得显式关掉 `dryRun` |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
 或用环境变量设。优先级由 `lib/config.js` 定：**插件配置 > 环境变量 > 内置默认值**；开关停在默认值时
@@ -157,7 +238,7 @@ patch 层 —— 每次写入前先备份该文件，只重写终端那一行的
 **改动在下次启动 DSH 后生效**：宿主每次挂载只读一次该配置，面板里也写着这句。发行版与超时属于"值"
 而不是"功能"：在 patch 里或用 `DSH_WSL_DISTRO` / `DSH_WSL_TIMEOUT_MS` 设置，面板只显示当前生效值。
 
-这个设置界面需要 `@deepseek-ai/schemastery`（插件把它声明为可选 peer 依赖）：没有它三个工具照常按
+这个设置界面需要 `@deepseek-ai/schemastery`（插件把它声明为可选 peer 依赖）：没有它工具照常按
 默认值工作，只是没有面板。
 
 面板**最底部**是一个反馈入口，旁边跟着一段简短的提交指南，以及一个「复制插件信息」按钮（详见
@@ -212,9 +293,16 @@ patch 层 —— 每次写入前先备份该文件，只重写终端那一行的
 | `stdin` | 否 | string | 在命令运行前写入其 stdin 的文本（UTF-8） |
 | `runInBackground` | 否 | boolean | 作为后台任务运行并立即返回任务 id；用 `job_output` 读、`job_kill` 停 |
 | `allowDangerous` | 否 | boolean | 置 `true` 才允许执行危险命令 |
+| `asRoot` | 否 | boolean | 本次调用以 root 执行（`wsl -u root`）；面板「管理员模式」关着时会被拒绝 |
 | `translatePaths` | 否 | boolean | 默认 `true`；置 `false` 时 `command` 原样传入，不做路径改写 |
 
 ## 配置
+
+面板里的开关与取值字段（`tools.wsl`、`tools.path`、`tools.env`、`tools.doctor`、
+`tools.bootstrap`、`backgroundJobs`、`translatePaths`、`startInSessionWorkspace`、`workdir`、
+`dangerGuard`、`allowRoot`、`distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
+其中两项**故意没有环境变量**：`dangerGuard`（它的关闭位置本身就是风险）与 `allowRoot`
+（WSL 的 root 免密，所以那项开关就是授权本身）。环境变量这一层：
 
 | 环境变量 | 默认值 | 作用 |
 |---|---|---|
@@ -224,7 +312,7 @@ patch 层 —— 每次写入前先备份该文件，只重写终端那一行的
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | 每条流的内存窗口（1 KiB – 8 MiB）；设到 64 MiB 以上时也会抬高落盘上限 |
 | `DSH_WSL_WORKDIR` | `home` | 不传 `workdir` 时的起点：`home`（Linux 的 `~`）、`session`（会话工作目录，Windows 检出对应 `/mnt/<盘>/...`），或任意显式路径 |
 
-无法解析或越界的值会回退到默认值——一个写错的环境变量不该让三个工具一起挂掉。
+无法解析或越界的值会回退到默认值——一个写错的环境变量不该让所有工具一起挂掉。
 配置在挂载时读取一次，改动需重启 DSH 生效。
 
 ## 注意事项
@@ -338,9 +426,11 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 | `lib/result.js` | 启动器噪声过滤、截断事实、标记渲染 |
 | `lib/diagnostics.js` | `wsl-env` 的能力探针、解析器与输出行 |
 | `lib/runner.js` | 唯一的 spawn 路径与启动器错误分类 |
-| `lib/tools/*.js` | 三个工具定义（schema / execute / presentCall） |
+| `lib/tools/*.js` | 工具定义（schema / execute / presentCall） |
+| `lib/doctor.js` | `wsl-doctor` 的项目探针：一段 shell、它的解析器与报告组装 |
+| `lib/bootstrap.js` | `wsl-bootstrap` 的配方、计划生成与结果渲染 |
 
-- `apply()` 解析配置并注册三个工具，每个都有 JSON-schema 参数定义、输出 schema、
+- `apply()` 解析配置并注册被启用的工具，每个都有 JSON-schema 参数定义、输出 schema、
   `render` 钩子与异步 `execute`。
 - 所有调用都走同一条 spawn 路径（`runner.runWsl`）：通过宿主 `subprocess` 执行
   `wsl.exe -d <distro> -e bash -lc "<exports; cd workdir && command>"`，stdout/stderr
@@ -378,12 +468,12 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 499 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 125 项客户端检查
+npm test          # 591 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 133 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 
 `npm test` 只替换 `ctx.subprocess`，用一个复刻了 seam 行为（有界尾窗、落盘文件、
-终止阶梯）的 shim 驱动三个工具跑在真实 WSL 上，覆盖路径改写、workdir 引号处理、
+终止阶梯）的 shim 驱动这些工具跑在真实 WSL 上，覆盖路径改写、workdir 引号处理、
 危险命令防护、发行版选择、退出码/超时/截断标记、`wsl-path`、`wsl-env`、参数校验、
 配置解析、启动器错误分类、返回结构与各自 `output.schema` 的一致性，以及模型可见
 目录的 token 预算。

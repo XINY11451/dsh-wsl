@@ -15,17 +15,20 @@ project kept on a Windows drive keeps **Windows** filesystem semantics — no PO
 permissions, case-insensitive names, no file-change notifications — at a fraction
 of the speed (see [Notes](#notes)).
 
-![The feature list and the left-sidebar switch panel](assets/market-preview-features-2.png)
+![The feature list and the left-sidebar switch panel](assets/market-preview-features-3.png)
 
 ## Tools
 
-The plugin registers three tools:
+The plugin registers five tools (the last two can be switched off independently,
+and `wsl-bootstrap` is OFF by default):
 
 | Tool | Purpose |
 |---|---|
 | `wsl` | Run a Linux command and return `stdout`/`stderr` with exit-code, timeout and truncation markers. |
 | `wsl-path` | Convert between Windows and WSL paths via `wslpath`. |
 | `wsl-env` | Summarize the WSL environment (distros, kernel, cpu, mem, disk). |
+| `wsl-doctor` | Compare what a project needs with what the distribution has — including commands that are really Windows binaries. Read-only. |
+| `wsl-bootstrap` | Install the missing toolchain inside the distribution, from a fixed recipe list, plan first. |
 
 ### `wsl`
 
@@ -90,6 +93,96 @@ unknown distro is an error rather than a partial answer. Note that `wsl --versio
 is **localized**, so its labels are passed through as the launcher printed them
 rather than parsed by name; the Direct3D/MSRDC/DXCore versions are omitted.
 
+### `wsl-doctor`
+
+Answers the question a project's own README cannot: **will the tooling this
+checkout expects actually work inside this distribution?** It reads the manifests
+in the directory (`package.json` and lockfiles, `.nvmrc`, `tsconfig.json`,
+`Cargo.toml`, `go.mod`, `pyproject.toml`, `requirements.txt`, `Dockerfile`,
+`docker-compose.yml`, `Makefile`, `CMakeLists.txt`) and reports, per need, whether
+it resolves on the Linux side:
+
+```
+distro: Ubuntu-22.04 (system default)
+workspace: /mnt/d/proj (Windows drive mount /mnt/d — builds, installs and git are much slower here; …)
+project: package.json, pnpm-lock.yaml
+
+needs (from the project): node, npm, pnpm
+  MISSING node — not on PATH in this distribution (from package.json)
+  WINDOWS npm — resolves to /mnt/c/Program Files/nodejs/npm, a Windows binary reached through interop; …
+  MISSING pnpm — not on PATH in this distribution (from pnpm-lock.yaml)
+
+usable on the Linux side: python3 3.10.12, gcc 11.4.0, make 4.3, git 2.34.1, curl, rsync, tar, sudo
+Windows binaries on the Linux PATH (interop): npm -> /mnt/c/Program Files/nodejs/npm, npx -> …
+privileges: uid=1000 (xiny) · sudo: requires a password (unusable from a tool call) · root: switched off
+
+next: node, npm are not usable — wsl-bootstrap({ recipes: ["node", "pnpm"] }) installs them …
+```
+
+That `WINDOWS` row is the reason the tool exists. WSL appends the Windows `PATH`
+to the Linux one, so `npm` resolves on a machine whose distribution has no `node`
+at all — measured here as `/mnt/c/Program Files/nodejs/npm` — and the errors a
+model gets from running it against a Linux directory name neither cause. Overall
+it is read-only, cheap, and worth running before blaming a failed command on the
+command. Takes an optional `workspace` (a Linux directory; default: the configured
+directory, else the session workspace) and `distro`.
+
+### `wsl-bootstrap`
+
+Installs the missing toolchain **inside the distribution**, from a fixed recipe
+list and nothing else: `node` (Node.js LTS into `/usr/local`, checksum-verified,
+with corepack), `pnpm`, `python` (python3 + pip + venv), `build`
+(build-essential), `tools` (jq, rsync, curl, git, ca-certificates). Dependencies
+are added when they are needed: `pnpm` brings `node`, and `node` brings `tools`
+when `curl` is missing.
+
+**It is off by default**, and its `dryRun` defaults to `true`, so the first call
+prints the plan and changes nothing:
+
+```
+dry run — nothing has been installed (distro Ubuntu-22.04)
+
+already present:
+  python — python3, pip and venv (apt)
+
+to install (python, tools):
+  [tools] apt packages: ca-certificates curl git jq rsync — runs as root inside the distribution
+      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq rsync
+
+apt would report:
+  Inst libjq1 (1.6-2.1ubuntu3.2 Ubuntu:22.04/jammy-updates [amd64])
+  …
+
+run it for real with `dryRun: false`.
+```
+
+The apt recipes collapse into **one** step (the `apt-get update` is the slow half,
+and running it once per recipe would look like a hang), and an `apt-get -s`
+simulation is included so the plan shows what apt itself would do. Recipes already
+satisfied are skipped, so a second run is cheap. The steps run through
+`wsl -u root` — see the next section for why — and a failing step stops the run
+with the tail of its output.
+
+## Running privileged commands (`asRoot`)
+
+`sudo` cannot work from a tool call: it needs a password, and stdin is `/dev/null`
+unless you send one. WSL has its own answer — `wsl.exe -u root` needs no password
+(measured: it answers `uid=0` on a machine where `sudo -n` fails) — so the `wsl`
+tool exposes it as `asRoot: true`, gated by a switch in the panel
+(「管理员模式（root）」, off by default):
+
+```
+wsl({ command: 'apt-get install -y jq', description: 'install jq', asRoot: true })
+```
+
+The authorisation is the switch, not the parameter: with it off, `asRoot: true` is
+**refused with that instruction** rather than quietly downgraded to your user
+account — a caller that asked for root and got a permission error would look for
+the cause in the wrong place. Every privileged result is marked
+(`[ran as root: wsl -u root]`) so a transcript says what happened, and the
+destructive-command guard applies independently: `rm -rf` still needs
+`allowDangerous: true`, as root or not.
+
 ## Install
 
 The published npm package is **`dsh-wsl-tool`**, not `dsh-wsl`: the registry
@@ -110,7 +203,7 @@ specifier you install under.
    checkout (which names the dependency after this package).
 
 2. Nothing else. The package's `cordis.patch.yml` inserts the `tool-wsl` row
-   itself when the bundle is loaded, process-wide, so the three tools are
+   itself when the bundle is loaded, process-wide, so the tools are
    available to every agent preset without further wiring. **There is no mode to
    pick and nothing to add to a preset** — the left-sidebar WSL panel arrives the
    same way.
@@ -124,7 +217,7 @@ specifier you install under.
 The settings panel is the one optional piece: its form needs
 `@deepseek-ai/schemastery`, which most profiles already have (any plugin that
 depends on it brings it in — add it to the profile's dependencies if yours does
-not). Without it, the three tools and the panel's 「WSL 终端启动路径」 field work
+not). Without it, the tools and the panel's 「WSL 终端启动路径」 field work
 as usual and only the switches are absent — the panel says so instead of waiting
 forever.
 
@@ -172,6 +265,9 @@ explanation.
 | Linux 默认工作目录 | a fixed Linux directory (for example `/mnt/d/project`) used when `workdir` is omitted. Filling it in wins over the switch above; clearing it goes back to following the session |
 | WSL 终端启动路径 | the optional sidebar terminal's startup directory — `--cd <dir>` on the `terminal-controller` row of your **profile patch** (see [Optional: a WSL terminal in the sidebar](#optional-a-wsl-terminal-in-the-sidebar)). Empty clears it, and the panel reads the current value from the same file |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
+| 管理员模式（root） | whether `wsl` accepts `asRoot: true` (`wsl -u root`). WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
+| wsl-doctor 项目体检 | registers `wsl-doctor` |
+| wsl-bootstrap 安装工具链 | registers `wsl-bootstrap`, which may install into the distribution. **Off by default**, and its `dryRun` still has to be turned off per call |
 
 The panel edits the plugin's own configuration, so the same values can be written
 by hand (`- id: tool-wsl` with `config:` in a profile patch) or by environment
@@ -191,7 +287,7 @@ features — set them in the patch or with `DSH_WSL_DISTRO` / `DSH_WSL_TIMEOUT_M
 and the panel shows what is currently in effect.
 
 The settings surface needs `@deepseek-ai/schemastery`, which the plugin declares as
-an optional peer dependency: without it the three tools still run on their defaults
+an optional peer dependency: without it the tools still run on their defaults
 and only the panel is missing.
 
 At the bottom of the panel there is one feedback entry, next to it a short
@@ -258,10 +354,18 @@ start too.
 | `stdin` | no | string | text written to the command stdin (UTF-8) before it runs |
 | `runInBackground` | no | boolean | run as a job and return its id immediately; read with `job_output`, stop with `job_kill` |
 | `allowDangerous` | no | boolean | set `true` to run destructive commands |
+| `asRoot` | no | boolean | run this call as root (`wsl -u root`); refused unless the panel's 管理员模式 switch is on |
 | `translatePaths` | no | boolean | default `true`; set `false` to pass `command` through verbatim |
 
 ## Configuration
 
+The panel's switches and value fields (`tools.wsl`, `tools.path`, `tools.env`,
+`tools.doctor`, `tools.bootstrap`, `backgroundJobs`, `translatePaths`,
+`startInSessionWorkspace`, `workdir`, `dangerGuard`, `allowRoot`, `distro`,
+`timeoutMs`) live in the profile patch and take effect as described on each row.
+Two of them have no environment variable on purpose: `dangerGuard` (its OFF
+position is the footgun) and `allowRoot` (WSL's root needs no password, so the
+switch IS the authorisation). The environment layer:
 | Environment variable | Default | Effect |
 |---|---|---|
 | `DSH_WSL_DISTRO` | (system default) | Pin the distribution for every call. |
@@ -271,7 +375,7 @@ start too.
 | `DSH_WSL_MAX_OUTPUT_BYTES` | `65536` | Per-stream in-memory window (1 KiB – 8 MiB). Also raises the spill ceiling when set above 64 MiB. |
 
 An unparsable or out-of-range value falls back to the default: one bad variable
-must not take all three tools down. Values are read once per mount, so a change
+must not take every tool down. Values are read once per mount, so a change
 takes effect on restart.
 
 ## Notes
@@ -374,9 +478,11 @@ is split by concern:
 | `lib/result.js` | Launcher-noise filters, truncation facts, marker rendering. |
 | `lib/diagnostics.js` | The `wsl-env` capability probe, its parser and its lines. |
 | `lib/runner.js` | The single spawn path plus launcher-error classification. |
-| `lib/tools/*.js` | The three tool definitions (schema, execute, presentCall). |
+| `lib/tools/*.js` | The tool definitions (schema, execute, presentCall). |
+| `lib/doctor.js` | The project probe for `wsl-doctor`: one shell script, its parser, the report composer. |
+| `lib/bootstrap.js` | The recipes, plan builder and outcome rendering for `wsl-bootstrap`. |
 
-- `apply()` resolves the configuration and registers three tools, each with a
+- `apply()` resolves the configuration and registers the enabled tools, each with a
   JSON-schema parameter definition, an output schema, a `render` hook and an
   async `execute`.
 - Every call goes through one spawn path (`runner.runWsl`): `wsl.exe -d <distro>
@@ -424,13 +530,13 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 499 host checks against real WSL (shim for ctx.subprocess) + 125 client checks
+npm test          # 591 host checks against real WSL (shim for ctx.subprocess) + 133 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
 `npm test` substitutes only `ctx.subprocess`, with a shim that reproduces the
 seam's bounded tail windows, spill files and termination ladder, and drives the
-three tools against the real WSL installation. It covers path translation,
+the tools against the real WSL installation. It covers path translation,
 workdir quoting, the destructive guard, distro selection, exit-code/timeout/
 truncation markers, `wsl-path`, `wsl-env`, argument validation, configuration
 parsing, launcher-error classification, the returned shape against each declared

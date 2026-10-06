@@ -78,7 +78,7 @@ both that the entry stays relative and that it resolves.
    It must print `function` and the resolved defaults. If it prints `undefined`,
    the plugin declares no `Config`, the platform has no schema to project, the
    entry's config status stays `absent` and the sidebar panel renders without a
-   single switch while all three tools keep working. The fragile step is the
+   single switch while every tool keeps working. The fragile step is the
    interop hop: `@deepseek-ai/schemastery` exports its builder as the **default**
    export, so `const { Schema } = await import(...)` silently yields `undefined`
    (see `lib/schema.js`, and the regression test that pins the picking).
