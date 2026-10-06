@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "1.10.12",
+  "version": "1.11.0",
   "description": "WSL tools for DSH: run Linux commands (fresh shell, exit codes, timeouts, truncation spill, stdin), convert Windows↔WSL paths, report the WSL environment, and check a project's toolchain against the distribution — including commands that are really Windows binaries. Long builds become background jobs; destructive commands need consent, root is a panel switch. A left-sidebar panel switches each capability; an opt-in patch points the sidebar terminal at WSL; WSL calls run below the DSH sandbox.",
   "type": "module",
   "main": "index.js",
