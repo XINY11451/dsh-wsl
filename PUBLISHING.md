@@ -187,19 +187,33 @@ consequences worth remembering:
   hand-written keys are `url`, `name`, `category`, `tarball` and `description`;
   everything else (including `screenshots`) is generated and must not be written by
   hand. Only the description needs a PR against `awesome-dsh-plugin`.
-- **Replacing a file in place refreshes the preview at the same URL**, which is why
-  `assets/screenshot-1.png` keeps its name across redesigns. GitHub's raw endpoint
-  caches, so a stale image can survive a few minutes to a day.
+- **Replacing a file in place does NOT refresh the preview.** Two caches are keyed on
+  the exact URL string and neither revalidates the bytes: dsh-market loads images
+  through the `images.weserv.nl` proxy (`?url=<the raw URL>&h=<height>&we=1` — see its
+  `client/client.js`), and the DSH desktop webview keeps its own HTTP disk cache under
+  `%APPDATA%\@deepseek-ai\dsh-desktop\Cache\Cache_Data`. A redesign committed over the
+  same path therefore keeps serving the previous image for as long as those copies
+  live. The 2026-10-05 preview did exactly that: the mode-picker screenshot (with
+  `WSL Dev` ticked) was replaced in place at `assets/screenshot-1.png`, and the listing
+  went on showing it. **Ship a preview under a new filename** — add the file, point
+  `screenshots.json` and the README embed at it, and retire the old path.
+  Retiring it costs one day of transition: the catalog's `screenshots` array is
+  generated from this repository and published about once a day, so a client still
+  holding the previous catalog requests the old URL after the file is gone and finds
+  nothing. Keep the old file until the next catalog publish when that URL is worth
+  keeping alive; delete it in the same change when the point is to retire the URL
+  (as here), accepting the empty slot until the rebuild.
 
-The current preview is rendered from `assets/market-preview.html` (the editable
-source of truth) with headless Edge:
+The preview is rendered from `assets/market-preview.html` (the editable source of
+truth) with headless Edge — straight to the filename the README and `screenshots.json`
+both use, so there is no copy step that can drift:
 
 ```powershell
 & 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new `
   --disable-gpu --hide-scrollbars --force-device-scale-factor=2 `
   --window-size=1280,800 --virtual-time-budget=3000 `
   --user-data-dir="$env:TEMP\edge-shot" `
-  --screenshot="assets\screenshot-1.png" "file:///$PWD/assets/market-preview.html"
+  --screenshot="assets\market-preview.png" "file:///$PWD/assets/market-preview.html"
 ```
 
 It renders 2560×1600 (1280×800 at 2×) in a few seconds with no browser window. The

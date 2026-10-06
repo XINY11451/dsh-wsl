@@ -10,7 +10,9 @@
 //
 // Each call runs in a fresh shell, so no state persists between calls. This
 // plugin publishes nothing and only consumes the host-plane `subprocess` and
-// `tools` registries, so it sits loose in an agent preset without a realm.
+// `tools` registries, so it needs no realm. Its own `cordis.patch.yml` inserts
+// the `tool-wsl` row process-wide, which is why the tools reach every agent
+// preset with no preset entry of its own (and why adding one there would fail).
 //
 // The implementation lives in `lib/`: `config` (defaults, environment overrides
 // and the plugin's own switches), `paths` (path translation and shell quoting),

@@ -96,7 +96,8 @@ launcher: WSL 版本: 2.6.3.0 · 内核版本: 6.6.87.2-1 · WSLg 版本: 1.0.71
    （依赖名会取本包自身的名字）。
 
 2. 不必再做别的。本包的 `cordis.patch.yml` 会在组合包加载时**自己插入** `tool-wsl` 行
-   （进程级），因此三个工具对所有 agent preset 都可用，无需额外接线。
+   （进程级），因此三个工具对所有 agent preset 都可用，无需额外接线。**不需要选择任何模式，
+   也不要在 preset 里加任何东西**——左侧栏的 WSL 面板同样是这样出现的。
 
    **不要**再在 preset 里列一遍 `tool-wsl`：DSH 按名字注册工具，第二次注册会直接失败
    —— `tool "wsl" is already registered in this scope`。这一行只由组合包提供。
@@ -359,7 +360,8 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 - 危险命令防护把命令按 `;`／`&`／`|`／换行切成段，每次 `rm` 调用按自身标志单独判定，
   设备/电源类工具在命令位置匹配后才拦截。
 
-插件不发布任何自身服务，因此它可以无 realm 地挂在 agent preset 中。
+插件不发布任何自身服务，且由它自己的组合包 patch **进程级**插入，因此既不需要 realm，
+也不需要任何 preset 条目。
 
 ## 开发
 
@@ -370,12 +372,13 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 { "dependencies": { "dsh-wsl-tool": "file:/path/to/dsh-wsl" } }
 ```
 
-然后重启 DSH，在包含 `tool-wsl` 行的 preset 会话中调用工具验证。
+然后重启 DSH，在**任意**会话里调用工具即可：组合包 patch 是进程级注册的，没有哪个 preset
+需要声明这一行。
 
 ### 测试
 
 ```sh
-npm test          # 260+ 项检查，跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess
+npm test          # 499 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 125 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

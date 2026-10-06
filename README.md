@@ -111,7 +111,9 @@ specifier you install under.
 
 2. Nothing else. The package's `cordis.patch.yml` inserts the `tool-wsl` row
    itself when the bundle is loaded, process-wide, so the three tools are
-   available to every agent preset without further wiring.
+   available to every agent preset without further wiring. **There is no mode to
+   pick and nothing to add to a preset** — the left-sidebar WSL panel arrives the
+   same way.
 
    Do **not** also list `tool-wsl` in a preset: DSH registers tools by name, and
    the second registration fails with
@@ -404,8 +406,8 @@ is split by concern:
   segments, judges each `rm` invocation on its own flags, and matches the
   device/power tools at command position before dispatch.
 
-The plugin publishes no services of its own, so it sits loose in an agent
-preset without a realm.
+The plugin publishes no services of its own and is inserted process-wide by its own
+bundle patch, so it needs no realm — and no preset entry either.
 
 ## Development
 
@@ -416,13 +418,13 @@ DSH host plane. Iterate by pointing a profile dependency at the checkout:
 { "dependencies": { "dsh-wsl-tool": "file:/path/to/dsh-wsl" } }
 ```
 
-then restart DSH and exercise the tools from a session that uses a preset
-containing the `tool-wsl` row.
+then restart DSH and call the tools from **any** session: the bundle patch registers
+them process-wide, so no preset declares the row.
 
 ### Tests
 
 ```sh
-npm test          # 260+ checks against real WSL, with a shim standing in for ctx.subprocess
+npm test          # 499 host checks against real WSL (shim for ctx.subprocess) + 125 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
