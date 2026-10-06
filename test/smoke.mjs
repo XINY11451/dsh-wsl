@@ -1896,6 +1896,25 @@ async function toolTests(tools, shim) {
     failingStep.summary)
   check('and the run stops there', failingStep.summary.includes('stopped at the first failure'), failingStep.summary)
 
+  console.log('\nwsl: an unenterable workdir stops the whole script')
+  // Regression: `cd <dir> && <script>` guards only the first command, so the rest
+  // of a multi-line script used to run in the HOST's directory. Measured live: the
+  // doctor described the DSH profile directory's manifests as the project's.
+  const badMulti = await tools.wsl.execute({
+    command: 'echo first\npwd\necho second',
+    description: 'multi-line into a missing directory',
+    workdir: '/nope/does-not-exist',
+  })
+  check('the call fails instead of running elsewhere', badMulti.exitCode !== 0, `exit ${badMulti.exitCode}`)
+  check('and no line of the script ran',
+    !badMulti.stdout.includes('first') && !badMulti.stdout.includes('second'), JSON.stringify(badMulti.stdout))
+  check('with bash naming the directory on stderr',
+    /No such file or directory/.test(badMulti.stderr), JSON.stringify(badMulti.stderr))
+  const liveBadDoctor = await tools['wsl-doctor'].execute({ workspace: '/nope/does-not-exist' })
+  check('the doctor reports the unusable workspace instead of another directory',
+    liveBadDoctor.summary.includes('could not be entered') && !liveBadDoctor.summary.includes('project: package.json'),
+    liveBadDoctor.summary)
+
   console.log('\nwsl-path')
   const toLinux = await tools['wsl-path'].execute({ path: 'C:\\Program Files\\Git' })
   eq('windows -> linux', toLinux.converted, '/mnt/c/Program Files/Git')
