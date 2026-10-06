@@ -1826,7 +1826,8 @@ async function toolTests(tools, shim) {
     .execute({ workspace: '/nope' })
   check('an unusable workspace is reported, not thrown',
     blockedValue.summary.includes('could not be entered') && blockedValue.summary.includes('/nope'), blockedValue.summary)
-  check('and it still names the distribution', blockedValue.summary.includes('Ubuntu-22.04'), blockedValue.summary)
+  check('and it names the distribution the same way the full report does',
+    blockedValue.summary.includes('distro: Ubuntu-22.04 (system default)'), blockedValue.summary)
 
   console.log('\nwsl-bootstrap: plan first, install only on request')
   const presentOutput = ['have.node=0', 'have.pnpm=0', 'have.python3=0', 'have.pip3=0',
