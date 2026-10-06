@@ -33,6 +33,14 @@ import {
   parseFlowSequence, readTerminalCwd, reviewTerminalWrite, splitPatchLines, validateTerminalCwd,
   verifyTerminalRewrite, writeTerminalCwd,
 } from '../lib/terminal-cwd.js'
+import {
+  commandState, composeDoctorReport, needsFromFacts, parseProbe, suggestionRecipes, versionToken,
+} from '../lib/doctor.js'
+import {
+  BOOTSTRAP_TIMEOUT_MS, parsePresence, planFor, presenceProbe, RECIPE_IDS, renderOutcome, renderPlan, resolveRecipes, tailOf,
+} from '../lib/bootstrap.js'
+import { createWslDoctorTool } from '../lib/tools/wsl-doctor.js'
+import { createWslBootstrapTool } from '../lib/tools/wsl-bootstrap.js'
 
 // One resolved configuration stands in for the mount the host would create.
 const CONFIG = resolveConfig({})
@@ -304,6 +312,67 @@ function makeJobs() {
     },
   }
 }
+
+/**
+ * A stand-in for lib/runner.js, for the two tools whose whole job is deciding
+ * what to send: the doctor and the installer.
+ *
+ * It matters that this is a stub and not the real runner. The doctor's verdict
+ * depends on the machine (`node` is missing here, present elsewhere), so a test
+ * that asserted real probe output would encode the author's distribution. And
+ * the installer's executed path installs software — a test must never be able
+ * to reach it.
+ */
+function makeStubRunner(answer = {}) {
+  const calls = []
+  const reply = (over = {}) => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    timeoutMs: null,
+    asRoot: false,
+    stdout: '',
+    stderr: '',
+    truncated: false,
+    stdoutTotalBytes: 0,
+    stdoutDroppedBytes: 0,
+    stderrTotalBytes: 0,
+    stderrDroppedBytes: 0,
+    stdoutSpillPath: null,
+    stderrSpillPath: null,
+    jobId: null,
+    ...over,
+  })
+  return {
+    calls,
+    resolveDistro: (arg) => (arg === undefined || arg === null || arg === '' ? null : arg),
+    async spawnWsl(argv, timeoutMs) {
+      calls.push({ kind: 'spawn', argv, timeoutMs })
+      return reply({ stdout: answer.spawn?.(argv) ?? '' })
+    },
+    async runWsl(command, opts = {}) {
+      calls.push({ kind: 'run', command, opts })
+      return reply({ asRoot: opts.asRoot === true, ...(answer.run?.(command, opts) ?? {}) })
+    },
+  }
+}
+
+/** The probe output a distribution with python but no node produces. */
+const DOCTOR_PROBE_TEXT = [
+  'file.package.json=1',
+  'file.pnpm-lock.yaml=1',
+  'pkg.manager=pnpm@9.12.0',
+  'cmd.node=missing',
+  'cmd.npm=interop:/mnt/c/Program Files/nodejs/npm',
+  'cmd.pnpm=missing',
+  'cmd.python3=/usr/bin/python3',
+  'cmd.git=/usr/bin/git',
+  'ver.python3=Python 3.10.12',
+  'ver.git=git version 2.34.1',
+  'user.uid=1000',
+  'user.name=xiny',
+  'sudo.passwordless=0',
+].join('\n')
 
 function makeCtx(shim, { jobs, shellEnv, settings, profileContext } = {}) {
   const tools = {}
@@ -827,8 +896,11 @@ async function unitTests() {
   eq('switches default to on', resolveConfig({}, {}).dangerGuard, true)
   eq('a non-boolean switch falls back instead of failing the mount',
     resolveConfig({}, { backgroundJobs: 'no' }).backgroundJobs, true)
-  eq('the tool switches default to all three on',
-    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true')
+  // The installer is the one tool that must NOT be mounted without a decision, so
+  // its default is asserted here rather than left to the schema's word.
+  eq('the tool switches default to the read-only set on, installer off',
+    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,true,false')
+  eq('and root execution is off by default', resolveConfig({}, {}).allowRoot, false)
   eq('a partial tools object leaves the other switches alone',
     resolveConfig({}, { tools: { env: false } }).tools.env, false)
   // The environment layer is only reachable with follow-session switched off: it is ON
@@ -997,6 +1069,119 @@ async function unitTests() {
   check('a Linux-filesystem workspace says so plainly',
     onLinuxFs === 'workspace: /home/xiny/proj (Linux filesystem)', onLinuxFs)
   eq('an inexpressible directory yields no line', workspaceLine(''), null)
+
+  // ------------------------------------------------------------------ doctor
+  console.log('\nproject-against-distribution report (wsl-doctor)')
+  // A distribution that has python but no node — and whose `npm` is the Windows
+  // one, which is the failure this tool exists to name.
+  const doctorFacts = parseProbe(DOCTOR_PROBE_TEXT)
+  eq('the probe parses into facts', doctorFacts['cmd.npm'], 'interop:/mnt/c/Program Files/nodejs/npm')
+  eq('the manifests and packageManager decide what is needed',
+    needsFromFacts(doctorFacts).map((need) => need.command).join(','), 'node,npm,pnpm')
+  eq('a found Linux command is usable', commandState(doctorFacts, 'git').state, 'linux')
+  eq('a /mnt command is called out as a Windows binary', commandState(doctorFacts, 'npm').state, 'interop')
+  eq('an absent command is missing', commandState(doctorFacts, 'pnpm').state, 'missing')
+  eq('suggestions map commands onto recipes', suggestionRecipes(['node', 'pnpm']).join(','), 'node,pnpm')
+  eq('python maps to its own recipe', suggestionRecipes(['python3', 'pip3']).join(','), 'python')
+  // Tool output has no common shape, so one extractor has to read all of them.
+  eq('a v-prefixed version', versionToken('v24.11.0'), '24.11.0')
+  eq('a named version', versionToken('Python 3.10.12'), '3.10.12')
+  eq('a verbose one', versionToken('gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0'), '11.4.0')
+  eq('a sentence', versionToken('git version 2.34.1'), '2.34.1')
+  eq('a docker one', versionToken('Docker version 24.0.7, build 24.0.7-0ubuntu2~22.04.1'), '24.0.7')
+  eq('and nothing yields null', versionToken(''), null)
+
+  const report = composeDoctorReport(doctorFacts, {
+    workspaceLine: 'workspace: /mnt/d/proj (Windows drive mount /mnt/d)',
+    bootstrapAvailable: true,
+    rootEnabled: false,
+    rootProbe: null,
+  })
+  check('the report names the missing tool', report.includes('MISSING node'), report)
+  check('and the Windows binary behind a found npm',
+    /WINDOWS npm — resolves to \/mnt\/c\/Program Files\/nodejs\/npm/.test(report), report)
+  check('it separates usable tools from blocked ones',
+    report.includes('usable on the Linux side: python3') && report.includes('python3 3.10.12'), report)
+  check('it states the privilege situation', report.includes('sudo: requires a password'), report)
+  check('it says root is switched off rather than guessing', report.includes('root: switched off'), report)
+  check('and it names the next step with the recipes to use',
+    report.includes('wsl-bootstrap({ recipes: ["node", "pnpm"] })'), report)
+  const reportNoBootstrap = composeDoctorReport(doctorFacts, {
+    workspaceLine: '', bootstrapAvailable: false, rootEnabled: false, rootProbe: null,
+  })
+  check('without the installer mounted it points at the panel switch instead',
+    reportNoBootstrap.includes('安装工具链'), reportNoBootstrap)
+  const reportRoot = composeDoctorReport(doctorFacts, {
+    workspaceLine: '', bootstrapAvailable: true, rootEnabled: true, rootProbe: 'available',
+  })
+  check('with root switched on the measured verdict is reported',
+    reportRoot.includes('root: available through `wsl -u root`'), reportRoot)
+  const emptyReport = composeDoctorReport(
+    parseProbe('user.uid=0'),
+    { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null },
+  )
+  check('a directory with no manifest says so instead of inventing needs',
+    emptyReport.includes('no manifest found'), emptyReport)
+
+  // --------------------------------------------------------------- bootstrap
+  console.log('\ninstaller plan (wsl-bootstrap)')
+  eq('every recipe id is offered to the schema', RECIPE_IDS.join(','), 'node,pnpm,python,build,tools')
+  eq('pnpm pulls in its runtime', resolveRecipes(['pnpm'], { curl: true }).join(','), 'node,pnpm')
+  eq('node without curl pulls in the apt tools recipe',
+    resolveRecipes(['node'], { curl: false }).join(','), 'node,tools')
+  eq('and with curl it does not', resolveRecipes(['node'], { curl: true }).join(','), 'node')
+  check('an unknown recipe is refused',
+    (() => {
+      try { resolveRecipes(['nope'], {}) ; return 'no error' } catch (error) { return error.message }
+    })().includes('unknown recipe "nope"'), '')
+  check('and the refusal lists the valid recipes',
+    (() => {
+      try { resolveRecipes(['nope'], {}) } catch (error) { return error.message.includes('node, pnpm, python, build, tools') }
+      return false
+    })(), '')
+
+  const presence = parsePresence(['have.node=0', 'have.pnpm=0', 'have.python3=1', 'have.pip3=1', 'have.gcc=1', 'have.make=1', 'have.jq=0'].join('\n'))
+  eq('presence parsing reads a hit', presence.python3, true)
+  eq('and a miss', presence.node, false)
+  check('the presence probe asks about every recipe command',
+    presenceProbe().includes('command -v node') && presenceProbe().includes('command -v jq'), presenceProbe())
+
+  const plan = planFor(['node', 'python', 'build'], presence)
+  eq('a satisfied recipe is skipped', plan.skipped.map((entry) => entry.id).join(','), 'python,build')
+  eq('the unsatisfied one becomes a step', plan.steps.map((step) => step.id).join(','), 'node')
+  eq('and it runs as root', plan.steps[0].root, true)
+  check('the plan shows the real commands', plan.steps[0].command.includes('nodejs.org/dist'), plan.steps[0].command)
+
+  const aptPlan = planFor(['python', 'build', 'tools'], {})
+  eq('every apt recipe collapses into ONE step', aptPlan.steps.length, 1)
+  check('with the packages merged',
+    aptPlan.steps[0].command.includes(
+      'apt-get install -y build-essential ca-certificates curl git jq python3 python3-pip python3-venv rsync',
+    ),
+    aptPlan.steps[0].command)
+  eq('and a read-only simulation of the same step',
+    aptPlan.steps[0].simulate.startsWith('apt-get -s install -y '), true)
+  check('the simulation cannot mutate', !aptPlan.steps[0].simulate.includes('apt-get update'), aptPlan.steps[0].simulate)
+
+  const dryText = renderPlan({ recipes: ['node'], ...plan }, { distro: 'Ubuntu-22.04', simulation: 'Inst python3 (simulated)' })
+  check('the dry run says nothing was installed',
+    dryText.startsWith('dry run — nothing has been installed'), dryText.slice(0, 80))
+  check('it names the distro', dryText.includes('Ubuntu-22.04'), dryText)
+  check('it shows the simulation', dryText.includes('Inst python3 (simulated)'), dryText)
+  check('and it tells the caller how to really install', dryText.includes('dryRun: false'), dryText)
+  check('a plan with nothing to do says so',
+    renderPlan({ recipes: ['python'], skipped: [{ id: 'python', what: 'python3' }], steps: [] }, {})
+      .includes('nothing to install'), '')
+  const outcome = renderOutcome([
+    { id: 'node', what: 'Node.js', ok: true, exitCode: 0, output: 'installed: v24.0.0' },
+    { id: 'python', what: 'python3', ok: false, exitCode: 100, output: 'first line\nE: Unable to locate package' },
+  ])
+  check('a successful step is reported ok', outcome.includes('[node] Node.js: ok'), outcome)
+  check('a failed step carries the tail of its output',
+    outcome.includes('FAILED (exit code 100)') && outcome.includes('Unable to locate package'), outcome)
+  check('and the outcome explains the stop', outcome.includes('stopped at the first failure'), outcome)
+  check('tailOf keeps the end', tailOf(`${'a'.repeat(10)}END`, 5).endsWith('END'), tailOf(`${'a'.repeat(10)}END`, 5))
+  check('the install timeout is generous but finite', BOOTSTRAP_TIMEOUT_MS === 10 * 60 * 1000, String(BOOTSTRAP_TIMEOUT_MS))
 }
 
 // --- tool-level tests ------------------------------------------------------
@@ -1087,11 +1272,16 @@ async function toolTests(tools, shim) {
   const rewrittenByDefault = await tools.wsl.execute({ command: "echo 'C:\\keep\\me'", description: 'translation on' })
   eq('the control mount rewrites it', rewrittenByDefault.stdout.trim(), '/mnt/c/keep/me')
 
-  const wslOnlyTools = makeCtx(shim, { settings: { tools: { wsl: true, path: false, env: false } } })
+  const wslOnlyTools = makeCtx(shim, {
+    settings: { tools: { wsl: true, path: false, env: false, doctor: false, bootstrap: false } },
+  })
   eq('a tool switch removes exactly that tool', Object.keys(wslOnlyTools).sort().join(','), 'wsl')
-  const allOffTools = makeCtx(shim, { settings: { tools: { wsl: false, path: false, env: false } } })
-  eq('all three switches off register nothing', Object.keys(allOffTools).length, 0)
-  eq('the control mount registers all three', Object.keys(tools).sort().join(','), 'wsl,wsl-env,wsl-path')
+  const allOffTools = makeCtx(shim, {
+    settings: { tools: { wsl: false, path: false, env: false, doctor: false, bootstrap: false } },
+  })
+  eq('all five switches off register nothing', Object.keys(allOffTools).length, 0)
+  eq('the control mount registers the four read-only tools',
+    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-env,wsl-path')
 
   // A volatile field is written into the same object the loader handed `apply` and
   // then announced, so the behaviour switches must take effect with no remount. The
@@ -1565,6 +1755,147 @@ async function toolTests(tools, shim) {
     command: 'echo x', description: 'refused job', runInBackground: true,
   }), /could not start a background job.*foreground/s)
 
+  // ------------------------------------------------- 管理员模式（以 root 执行）
+  console.log('\nwsl: root execution is switch-gated')
+  const plainStart = shim.calls.length
+  const plain = await tools.wsl.execute({ command: 'id -u', description: 'user id' })
+  eq('a call without asRoot is not root', plain.asRoot, false)
+  check('its argv has no -u root', !shim.calls[plainStart].argv.includes('-u'), shim.calls[plainStart].argv.join(' '))
+  check('and its text carries no root marker', !render(plain).includes('ran as root'), render(plain))
+  await rejects('asRoot is refused while the panel switch is off',
+    () => tools.wsl.execute({ command: 'id -u', description: 'root id', asRoot: true }), /管理员模式/)
+  await rejects('a non-boolean asRoot is refused',
+    () => tools.wsl.execute({ command: 'id -u', description: 'root id', asRoot: 'yes' }), /must be a boolean/)
+
+  const rootTools = makeCtx(shim, { jobs, settings: { allowRoot: true } })
+  const rootStart = shim.calls.length
+  const rooted = await rootTools.wsl.execute({ command: 'id -u', description: 'root id', asRoot: true })
+  eq('with the switch on the call really is root', rooted.stdout.trim(), '0')
+  eq('and the result says so', rooted.asRoot, true)
+  const rootArgv = shim.calls[rootStart].argv
+  check('the launcher gets `-u root` before `-e`',
+    rootArgv.includes('-u') && rootArgv.indexOf('-u') < rootArgv.indexOf('-e') && rootArgv[rootArgv.indexOf('-u') + 1] === 'root',
+    rootArgv.join(' '))
+  check('and the model-facing text marks it',
+    render(rooted).includes('[ran as root: wsl -u root]'), JSON.stringify(render(rooted).slice(0, 80)))
+  await rejects('the destructive guard still applies to a root call',
+    () => rootTools.wsl.execute({
+      command: 'rm -rf /tmp/definitely-not-there', description: 'guarded as root', asRoot: true,
+    }), /refused a destructive command/)
+  const rootBackground = await rootTools.wsl.execute({
+    command: 'echo root-background', description: 'root background', asRoot: true, runInBackground: true,
+  })
+  eq('a background root call carries the flag into its result', rootBackground.asRoot, true)
+  eq('and it is still a job', typeof rootBackground.jobId, 'string')
+
+  console.log('\nwsl-doctor: the tool assembles the report')
+  const doctorRunner = makeStubRunner({
+    spawn: (argv) => (argv.includes('-l') ? '  * Ubuntu-22.04    Running    2\n' : ''),
+    run: (command) => (command.includes('package.json') ? { stdout: DOCTOR_PROBE_TEXT } : {}),
+  })
+  const doctorValue = await createWslDoctorTool({ config: CONFIG, runner: doctorRunner })
+    .execute({ workspace: '/tmp/proj' })
+  check('the report names the distribution it probed',
+    doctorValue.summary.includes('distro: Ubuntu-22.04 (system default)'), doctorValue.summary)
+  check('and the interop trap the tool exists for', doctorValue.summary.includes('WINDOWS npm'), doctorValue.summary)
+  eq('the probe ran in the directory the caller named', doctorRunner.calls[0].opts.workdir, '/tmp/proj')
+  check('and the probe is the project probe',
+    doctorRunner.calls[0].command.includes('command -v node'), doctorRunner.calls[0].command.slice(0, 60))
+  check('root is NOT probed while the panel switch is off',
+    !doctorRunner.calls.some((call) => call.opts?.asRoot === true),
+    JSON.stringify(doctorRunner.calls.map((call) => call.opts?.asRoot)))
+
+  const rootDoctorRunner = makeStubRunner({
+    spawn: (argv) => (argv.includes('-l') ? '  * Ubuntu-22.04    Running    2\n' : ''),
+    run: (command) => {
+      if (command === 'id -u') return { stdout: '0\n' }
+      return command.includes('package.json') ? { stdout: DOCTOR_PROBE_TEXT } : {}
+    },
+  })
+  const rootDoctorValue = await createWslDoctorTool({
+    config: { ...CONFIG, allowRoot: true }, runner: rootDoctorRunner,
+  }).execute({})
+  check('with root on it measures and reports availability',
+    rootDoctorValue.summary.includes('root: available through `wsl -u root`'), rootDoctorValue.summary)
+
+  const blockedRunner = makeStubRunner({
+    spawn: () => '  * Ubuntu-22.04    Running    2\n',
+    run: () => ({ exitCode: 1, stderr: 'bash: line 1: cd: /nope: No such file or directory' }),
+  })
+  const blockedValue = await createWslDoctorTool({ config: CONFIG, runner: blockedRunner })
+    .execute({ workspace: '/nope' })
+  check('an unusable workspace is reported, not thrown',
+    blockedValue.summary.includes('could not be entered') && blockedValue.summary.includes('/nope'), blockedValue.summary)
+  check('and it still names the distribution', blockedValue.summary.includes('Ubuntu-22.04'), blockedValue.summary)
+
+  console.log('\nwsl-bootstrap: plan first, install only on request')
+  const presentOutput = ['have.node=0', 'have.pnpm=0', 'have.python3=0', 'have.pip3=0',
+    'have.gcc=1', 'have.make=1', 'have.jq=0', 'have.rsync=1', 'have.curl=1', 'have.git=1'].join('\n')
+  const bootstrapRunner = makeStubRunner({
+    run: (command) => {
+      if (command.includes('command -v')) return { stdout: presentOutput }
+      if (command.includes('apt-get -s')) return { stdout: 'Inst python3 (simulated)' }
+      return { stdout: 'installed python3' }
+    },
+  })
+  const bootstrap = createWslBootstrapTool({
+    config: { ...CONFIG, tools: { ...CONFIG.tools, bootstrap: true } },
+    runner: bootstrapRunner,
+  })
+  const dryValue = await bootstrap.execute({ recipes: ['python'] })
+  check('the dry run says nothing was installed',
+    dryValue.summary.startsWith('dry run — nothing has been installed'), dryValue.summary.slice(0, 80))
+  check('it shows what apt would report', dryValue.summary.includes('Inst python3 (simulated)'), dryValue.summary)
+  check('it prints the exact command',
+    dryValue.summary.includes('apt-get install -y python3 python3-pip python3-venv'), dryValue.summary)
+  check('it says how to really install', dryValue.summary.includes('dryRun: false'), dryValue.summary)
+  check('no step ran as root in a dry run',
+    !bootstrapRunner.calls.some((call) => call.opts?.asRoot === true),
+    JSON.stringify(bootstrapRunner.calls.map((call) => call.opts?.asRoot)))
+  check('and nothing was installed',
+    !bootstrapRunner.calls.some((call) => String(call.command).includes('apt-get install')),
+    JSON.stringify(bootstrapRunner.calls.map((call) => String(call.command).slice(0, 40))))
+
+  const installStart = bootstrapRunner.calls.length
+  const installValue = await bootstrap.execute({ recipes: ['python'], dryRun: false })
+  const installStep = bootstrapRunner.calls.slice(installStart)
+    .find((call) => String(call.command).includes('apt-get install'))
+  eq('the install step runs as root', installStep?.opts?.asRoot, true)
+  check('with the packages the recipe names', String(installStep?.command).includes('python3-venv'), String(installStep?.command))
+  check('and it is given a real deadline',
+    installStep?.opts?.timeoutMs === BOOTSTRAP_TIMEOUT_MS, String(installStep?.opts?.timeoutMs))
+  check('the outcome is reported per recipe',
+    installValue.summary.includes('[python]') && installValue.summary.includes('ok'), installValue.summary)
+
+  await rejects('an unknown recipe is refused',
+    () => bootstrap.execute({ recipes: ['nope'] }), /unknown recipe/)
+  await rejects('an empty recipe list is refused',
+    () => bootstrap.execute({ recipes: [] }), /non-empty array/)
+  await rejects('a non-array recipe list is refused',
+    () => bootstrap.execute({ recipes: 'node' }), /non-empty array/)
+  await rejects('a non-boolean dryRun is refused',
+    () => bootstrap.execute({ recipes: ['node'], dryRun: 'no' }), /must be a boolean/)
+  await rejects('a failing presence probe is a tool error, not a silent install',
+    () => createWslBootstrapTool({
+      config: CONFIG,
+      runner: makeStubRunner({ run: (command) => (command.includes('command -v') ? { exitCode: 1, stderr: 'boom' } : {}) }),
+    }).execute({ recipes: ['node'] }), /could not inspect/)
+
+  const failingStep = await createWslBootstrapTool({
+    config: CONFIG,
+    runner: makeStubRunner({
+      run: (command) => {
+        if (command.includes('command -v')) return { stdout: presentOutput }
+        if (command.includes('apt-get -s')) return { stdout: 'simulated' }
+        return { exitCode: 100, stderr: 'E: Unable to locate package python3-venv' }
+      },
+    }),
+  }).execute({ recipes: ['python'], dryRun: false })
+  check('a failing step is reported with its output',
+    failingStep.summary.includes('FAILED (exit code 100)') && failingStep.summary.includes('Unable to locate package'),
+    failingStep.summary)
+  check('and the run stops there', failingStep.summary.includes('stopped at the first failure'), failingStep.summary)
+
   console.log('\nwsl-path')
   const toLinux = await tools['wsl-path'].execute({ path: 'C:\\Program Files\\Git' })
   eq('windows -> linux', toLinux.converted, '/mnt/c/Program Files/Git')
@@ -1616,6 +1947,11 @@ async function toolTests(tools, shim) {
   // is a real limit. It is asserted, not aspirational: a future edit that
   // re-bloats the catalog fails here instead of quietly costing tokens forever.
   // The numbers are a ratchet just above today's size, not a target.
+  //
+  // The total moved from 3800 to 5600 when `wsl-doctor` and `wsl-bootstrap` were
+  // added (three tools became five). The per-tool limit did NOT move: `wsl` gained
+  // `asRoot` and still fits under 2500 because its prose was tightened to pay for
+  // it. A future tool has to justify its own cost the same way.
   console.log('\nmodel-facing catalog budget')
   let catalog = 0
   for (const [name, tool] of Object.entries(tools)) {
@@ -1623,7 +1959,12 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_500, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 3_800, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 5_600, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  // The installer's own description is the only place the model learns that a
+  // second call with `dryRun: false` is what installs, so that phrase is load-bearing.
+  check('the installer says a second call is what installs',
+    tools['wsl-bootstrap'] === undefined || tools['wsl-bootstrap'].description.includes('dryRun: false'),
+    tools['wsl-bootstrap']?.description ?? '(not mounted)')
 
   // The bundle patch must stay minimal: installing a tool plugin must not decide
   // which shell someone's terminals open. Pointing the desktop sidebar terminal at
@@ -1734,7 +2075,8 @@ const jobs = makeJobs()
 console.log(`backend: ${useReal ? `real DSH provider (${modulesRoot})` : 'local shim'}`)
 try {
   const tools = makeCtx(shim, { jobs })
-  check('three tools are registered', Object.keys(tools).sort().join(',') === 'wsl,wsl-env,wsl-path', Object.keys(tools).join(','))
+  check('the default mount registers the four read-only tools, not the installer',
+    Object.keys(tools).sort().join(',') === 'wsl,wsl-doctor,wsl-env,wsl-path', Object.keys(tools).join(','))
   await unitTests()
   await toolTests(tools, shim)
 } finally {

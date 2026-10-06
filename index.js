@@ -35,6 +35,8 @@ import { readTerminalCwd, reviewTerminalWrite, writeTerminalCwd } from './lib/te
 import { createWslTool } from './lib/tools/wsl.js'
 import { createWslPathTool } from './lib/tools/wsl-path.js'
 import { createWslEnvTool } from './lib/tools/wsl-env.js'
+import { createWslDoctorTool } from './lib/tools/wsl-doctor.js'
+import { createWslBootstrapTool } from './lib/tools/wsl-bootstrap.js'
 
 export const name = 'tool-wsl'
 export const inject = ['tools', 'subprocess']
@@ -91,12 +93,15 @@ export const Config = Schema?.object({
     wsl: Schema.boolean().default(true).description('注册 `wsl` 工具：在 WSL 发行版中执行 Linux 命令。').volatile(),
     path: Schema.boolean().default(true).description('注册 `wsl-path` 工具：在 Windows 路径与 `/mnt/...` 之间互转。').volatile(),
     env: Schema.boolean().default(true).description('注册 `wsl-env` 工具：汇总发行版、内核、systemd、cgroup、GPU 直通、docker 与挂载盘。').volatile(),
-  }).description('要注册哪些工具；这三项在重启 DSH 后生效。'),
+    doctor: Schema.boolean().default(true).description('注册 `wsl-doctor` 工具：对照项目清单与发行版实际能力，指出缺什么，以及哪些命令其实是 Windows 的。').volatile(),
+    bootstrap: Schema.boolean().default(false).description('注册 `wsl-bootstrap` 工具：在发行版里补装缺失的工具链。默认关；打开后它以 root 执行固定配方，且调用方仍需显式 `dryRun: false`。').volatile(),
+  }).description('要注册哪些工具；这几项在重启 DSH 后生效。'),
   backgroundJobs: Schema.boolean().default(true).description('允许长任务以 `runInBackground` 后台执行，结果由内置 job 工具读取。').volatile(),
   translatePaths: Schema.boolean().default(true).description('命令中的 Windows 路径默认转为 `/mnt/...`。').volatile(),
   startInSessionWorkspace: Schema.boolean().default(true).description('未传 `workdir` 时从会话目录启动；默认开。关闭后使用下方固定目录，该目录留空时为家目录 `~`。').volatile(),
   workdir: Schema.string().default('').description('未传 `workdir` 时使用的固定 Linux 目录（如 `/mnt/d/project`），优先于「跟随会话工作区」；留空表示不指定。').volatile(),
   dangerGuard: Schema.boolean().default(true).description('危险命令（删除、分区、关机等）需显式 `allowDangerous` 才放行；关闭后模型可直接执行。').volatile(),
+  allowRoot: Schema.boolean().default(false).description('允许 `wsl` 以 root 执行（`asRoot: true`）。WSL 的 root 免密，所以这项开关就是授权本身；默认关。').volatile(),
   distro: Schema.string().default('').description('固定使用的发行版；留空表示使用系统默认（也可用 `DSH_WSL_DISTRO`）。').volatile(),
   timeoutMs: Schema.number().default(0).description('默认命令超时（毫秒）；0 表示使用内置默认（也可用 `DSH_WSL_TIMEOUT_MS`）。').volatile(),
 }).description('dsh-wsl 的功能开关与默认值。')
@@ -585,6 +590,7 @@ async function selfInfo(config, runner) {
       translatePaths: config.translatePaths,
       startInSessionWorkspace: config.startInSessionWorkspace,
       dangerGuard: config.dangerGuard,
+      allowRoot: config.allowRoot,
       distro: config.distro,
       commandTimeoutMs: config.commandTimeoutMs,
       maxOutputBytes: config.maxOutputBytes,
@@ -603,6 +609,11 @@ export function apply(ctx, settings = {}) {
   if (config.tools.wsl) ctx.tools.register(createWslTool({ ctx, config, runner }))
   if (config.tools.path) ctx.tools.register(createWslPathTool({ config, runner }))
   if (config.tools.env) ctx.tools.register(createWslEnvTool({ config, runner }))
+  if (config.tools.doctor) ctx.tools.register(createWslDoctorTool({ config, runner }))
+  // The installer is the one tool that is NOT registered by default: turning on
+  // its switch is the user's decision to let this plugin add software to their
+  // distribution.
+  if (config.tools.bootstrap) ctx.tools.register(createWslBootstrapTool({ config, runner }))
 
   // ---------------------------------------------------------------- self info
   //

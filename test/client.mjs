@@ -226,12 +226,13 @@ const sectionIn = (nodes, title) => nodes.find((node) => node.type === 'section'
   && node.props.children[0].type === 'h3'
   && node.props.children[0].props?.children === title)
 const switches = found.filter((node) => node.type?.primitiveName === 'Switch')
-check('it renders one switch per switchable feature', switches.length === 7,
+check('it renders one switch per switchable feature', switches.length === 10,
   `found ${switches.length}; rendered: ${found.map((node) => String(node.type?.primitiveName ?? node.type)).join(',')}`)
 const labels = switches.map((node) => node.props?.label).filter((v) => typeof v === 'string')
 for (const expected of [
-  'wsl 命令执行', 'wsl-path 路径转换', 'wsl-env 能力体检', '后台任务',
-  '自动转换路径', '默认跟随会话工作区', '危险命令守卫',
+  'wsl 命令执行', 'wsl-path 路径转换', 'wsl-env 能力体检',
+  'wsl-doctor 项目体检', 'wsl-bootstrap 安装工具链',
+  '后台任务', '自动转换路径', '默认跟随会话工作区', '危险命令守卫', '管理员模式（root）',
 ]) {
   check(`it labels the ${expected} row`, labels.includes(expected), labels.join(' | '))
 }
@@ -258,6 +259,22 @@ for (const mention of ['每次调用使用全新 shell', 'systemd', '内置 job 
 check('the destructive-guard switch warns in its own tooltip',
   switches.some((node) => node.props?.label === '危险命令守卫' && /有风险/.test(String(node.props?.title))),
   JSON.stringify(switches.map((node) => node.props?.title)))
+// Two rows authorise something on their ON position rather than removing it: the
+// installer adds software, and root runs a call privileged. Both have to say so,
+// with wording that is not the guard's own (whose OFF position is the risk).
+const cautionRows = ['wsl-bootstrap 安装工具链', '管理员模式（root）']
+for (const label of cautionRows) {
+  const row = switches.find((node) => node.props?.label === label)
+  check(`the ${label} switch is marked 打开需谨慎`, row?.props?.title?.includes('打开需谨慎') === true, String(row?.props?.title))
+}
+check('the guard keeps its own wording rather than the new one',
+  switches.some((node) => node.props?.label === '危险命令守卫' && String(node.props?.title).includes('有风险')),
+  JSON.stringify(switches.map((node) => node.props?.title)))
+check('the panel says the installer is off unless the user turns it on',
+  rendered.includes('wsl-bootstrap 安装工具链') && rendered.includes('dryRun: false'),
+  rendered.slice(0, 200))
+check('and it explains that root is the authorisation itself',
+  rendered.includes('管理员模式（root）') && rendered.includes('这项开关就是授权本身'), rendered.slice(0, 200))
 // The panel now OFFERS the sidebar terminal's startup directory (one field, one 保存),
 // but it still must not print the patch RECIPE: pointing a terminal at WSL is the
 // user's own opt-in to make in their patch layer, and this panel prints no YAML. The
