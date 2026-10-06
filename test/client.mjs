@@ -712,7 +712,7 @@ getAnswer = { path: '', available: false, error: null }
 const missingRow = mountStateful(main.component, { ...panelProps })
 await missingRow.flush()
 check('a profile without the terminal row points at the opt-in',
-  textOf(missingRow.tree()).includes('尚无指向 WSL 的终端配置'), textOf(missingRow.tree()).slice(-240))
+  textOf(missingRow.tree()).includes('还没有 WSL 终端那一项'), textOf(missingRow.tree()).slice(-240))
 eq('and saving is withheld until that opt-in exists', fieldIn(missingRow.tree()).save?.props?.disabled, true)
 check('while the field itself stays editable',
   fieldIn(missingRow.tree()).input?.props?.disabled !== true,
@@ -730,7 +730,7 @@ check('a host that cannot name the patch file reports that reason',
   unresolvedText.includes('读取失败') && unresolvedText.includes('profileContext'),
   unresolvedText.slice(-260))
 check('and it is not dressed up as a missing opt-in',
-  !unresolvedText.includes('尚无指向 WSL 的终端配置'), unresolvedText.slice(-260))
+  !unresolvedText.includes('还没有 WSL 终端那一项'), unresolvedText.slice(-260))
 check('the field is still typeable in that state',
   fieldIn(unresolved.tree()).input?.props?.disabled !== true,
   String(fieldIn(unresolved.tree()).input?.props?.disabled))
