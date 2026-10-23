@@ -18,7 +18,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 
 ## 工具
 
-插件注册九个工具。除 `wsl-term` 外每个都有独立开关，其中 `wsl-doctor` 与 `wsl-bootstrap` **默认关**：
+插件注册十个工具。除 `wsl-term` 外每个都有独立开关，其中 `wsl-doctor` 与 `wsl-bootstrap` **默认关**：
 
 | 工具 | 用途 |
 |---|---|
@@ -31,6 +31,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 | `wsl-read` | 读取发行版里的文本文件，整份或按行范围；二进制与非 UTF-8 直接拒绝 |
 | `wsl-write` | 写入发行版里的文本文件，原子替换，父目录自动创建 |
 | `wsl-edit` | 在发行版里的文件中替换唯一匹配的字符串 |
+| `wsl-grep` | 在发行版里按正则搜索文件内容，按文件分组返回带行号的匹配行 |
 
 ### `wsl`
 
@@ -241,6 +242,34 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
 - **这是便利，不是沙箱。** `wsl` 本来就能写你有权限写的任何文件，所以这三个工具没有增加新的能力；
   它们增加的是"模型不必自己拼 shell 命令"，以及"结果是有结构的，而不是靠解析屏幕"。
 
+### `wsl-grep`
+
+在发行版里搜索文件内容，按文件分组返回带行号的匹配行——参数和结果形状都与平台自带的 `grep` 一致，
+只是指向发行版而不是 Windows：
+
+```
+wsl-grep({ pattern: 'TODO', path: '~/project' })
+wsl-grep({ pattern: 'listen\\(', path: '/etc/nginx', include: '*.conf' })
+```
+
+`pattern` 是正则，`path` 是 Linux 路径（默认当前会话的工作目录），`include` 是**一个**正向 glob
+（`*.ts`、`*.{js,jsx}`），不是列表，也不支持取反——两个引擎都只接受单个过滤条件，传列表只会静默地
+搜错文件。结果上限 250 条匹配、每条预览行 2000 字节；被截断时结果会说明一共看到多少条，需要上下文
+就用 `wsl-read` 读那个文件。
+
+引擎取决于发行版里装了什么：有 `rg` 就用 `rg`（尊重 `.gitignore`、跳过二进制、输出 JSON），否则退回
+GNU `grep -E`——Ubuntu 镜像默认就是后者。这个差异在两处可见，写正则前值得知道：
+
+- **方言。** `rg` 支持 `\d`、`\w`、`\b`，`grep -E` 不支持。用了这些的表达式在一个引擎上能搜到、
+  在另一个上一条也搜不到，所以安全子集是两个都认的那部分。两个引擎都编译不了的表达式会被当作
+  **搜索失败**报出来，而不是"没有匹配"。
+- **忽略规则。** `rg` 会跳过 `.gitignore` 排除的文件，`grep` 不会，所以同一条搜索在两台机器上
+  可能返回不同的文件集合。在意这个差异时，用 `wsl-bootstrap` 把 `ripgrep` 装上。
+
+路径里带冒号正是回退方案要向 `grep` 要 `-Z` 的原因：文件名与行号之间用 NUL 分隔，`a:b.ts` 就还是
+一个路径，而不会被拆成"文件 `a`、第 `b.ts` 行"。二进制文件不会出现在结果里——`grep -I` 与 `rg`
+的默认行为都会跳过它们。
+
 ## 以 root 执行（`asRoot`）
 
 WSL 的 root 不需要密码，因此可以让单次调用以 root 执行（即 `wsl -u root`）。它由面板里的一项开关把关
@@ -449,7 +478,7 @@ token）。按 `Ctrl+C` 只是停止等待，那一轮会在客户端里继续�
 ## 配置
 
 面板里的开关与取值字段（`tools.wsl`、`tools.path`、`tools.env`、`tools.doctor`、
-`tools.bootstrap`、`tools.read`、`tools.write`、`tools.edit`、`backgroundJobs`、
+`tools.bootstrap`、`tools.read`、`tools.write`、`tools.edit`、`tools.grep`、`backgroundJobs`、
 `translatePaths`、`startInSessionWorkspace`、`workdir`、`dangerGuard`、`allowRoot`、
 `distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
 其中两项**故意没有环境变量**：`dangerGuard`（它的关闭位置本身就是风险）与 `allowRoot`

@@ -24,7 +24,7 @@ of the speed (see [Notes](#notes)).
 
 ## Tools
 
-The plugin registers nine tools. Each has a switch of its own except `wsl-term`, and
+The plugin registers ten tools. Each has a switch of its own except `wsl-term`, and
 `wsl-doctor` and `wsl-bootstrap` are OFF by default:
 
 | Tool | Purpose |
@@ -38,6 +38,7 @@ The plugin registers nine tools. Each has a switch of its own except `wsl-term`,
 | `wsl-read` | Read a text file inside the distribution, whole or by line range. Binary and non-UTF-8 files are refused. |
 | `wsl-write` | Write a text file inside the distribution, atomically, creating parents. |
 | `wsl-edit` | Replace one unique string in a text file inside the distribution. |
+| `wsl-grep` | Search file contents inside the distribution with a regular expression, grouped by file with line numbers. |
 
 ### `wsl`
 
@@ -295,6 +296,39 @@ Four things worth knowing:
 - **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
   these add no new power; what they add is that the model does not have to compose a shell
   command, and that the result is structured instead of screen-scraped.
+
+### `wsl-grep`
+
+Searches file contents inside the distribution and returns the matching lines grouped by file,
+with line numbers — the same arguments and the same result shape as the platform's own `grep`
+tool, pointed at a distribution instead of at Windows:
+
+```
+wsl-grep({ pattern: 'TODO', path: '~/project' })
+wsl-grep({ pattern: 'listen\\(', path: '/etc/nginx', include: '*.conf' })
+```
+
+`pattern` is a regular expression, `path` is a Linux path (default: the session workspace), and
+`include` is **one** positive glob (`*.ts`, `*.{js,jsx}`) — not a list, and negation is not
+supported, because both engines take a single filter and a list would silently search the wrong
+files. Results are capped at 250 matches with 2000 bytes per previewed line; a capped result
+says how many were seen, and `wsl-read` on a matched file gives the surrounding context.
+
+The engine is whichever the distribution has: `rg` when it is installed (it honours
+`.gitignore`, skips binaries, and reports JSON), and GNU `grep -E` otherwise, which is what
+Ubuntu images ship. That difference is visible in two places, and worth knowing before you
+write a pattern:
+
+- **Dialect.** `rg` accepts `\d`, `\w` and `\b`; `grep -E` does not. A pattern using them works
+  on one engine and finds nothing on the other, so the safe subset is the one both understand.
+  A pattern that neither can compile is reported as a search failure, not as "no matches".
+- **Ignore rules.** `rg` skips what `.gitignore` excludes and `grep` does not, so the same
+  search can return different sets of files on two machines. Install `ripgrep`
+  (`wsl-bootstrap` will do it) when that difference matters.
+
+A path containing a colon is why the fallback asks `grep` for `-Z`: the file name and the line
+number are separated by a NUL byte, so `a:b.ts` stays one path instead of becoming `a` on line
+`b.ts`. Binary files are never returned — `grep -I` and `rg`'s own default both skip them.
 
 ## Running privileged commands (`asRoot`)
 
@@ -555,7 +589,7 @@ the same reply appears in the client.
 ## Configuration
 
 The panel's switches and value fields (`tools.wsl`, `tools.path`, `tools.env`,
-`tools.doctor`, `tools.bootstrap`, `tools.read`, `tools.write`, `tools.edit`,
+`tools.doctor`, `tools.bootstrap`, `tools.read`, `tools.write`, `tools.edit`, `tools.grep`,
 `backgroundJobs`, `translatePaths`, `startInSessionWorkspace`, `workdir`, `dangerGuard`,
 `allowRoot`, `distro`, `timeoutMs`) live in the profile patch and take effect as described on
 each row.

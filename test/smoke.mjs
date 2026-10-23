@@ -25,6 +25,7 @@ import { apply, buildConfig } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
 import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
+import { grepScript, parseGrepZ, parseRgJson, previewLine } from '../lib/fs-ops.js'
 import { destructiveReason } from '../lib/guard.js'
 import { channelSessionOf, createChannel, firstUserLine, SAY_PREFIX, sessionRecordOf, titlesOf, validSessionId, walletText } from '../lib/channel.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
@@ -1154,7 +1155,7 @@ eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession
   // all — opening a terminal in the sidebar is the consent it needs — so it is not in
   // this object and cannot be switched off.
   eq('the tool switches default to the read-only and file tools on; the diagnostics and installer are opt-in',
-    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,false,false,true,true,true')
+    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,false,false,true,true,true,true')
   check('and the terminal tool has no switch of its own',
     resolveConfig({}, {}).tools.term === undefined
     && resolveConfig({}, { tools: { term: false } }).tools.term === undefined)
@@ -1882,7 +1883,7 @@ async function toolTests(tools, shim) {
   const wslOnlyTools = makeCtx(shim, {
     settings: {
       tools: {
-        wsl: true, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false,
+        wsl: true, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false,
       },
     },
   })
@@ -1891,19 +1892,19 @@ async function toolTests(tools, shim) {
   const allOffTools = makeCtx(shim, {
     settings: {
       tools: {
-        wsl: false, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false,
+        wsl: false, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false,
       },
     },
   })
   eq('with every switch off, only the switchless terminal tool remains',
     Object.keys(allOffTools).sort().join(','), 'wsl-term')
   eq('the control mount registers the file tools, the read-only tools and the terminal tool',
-    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   // The installer is absent unless asked for: it adds software. The terminal tool is not
   // optional and not switchable — a terminal the user opens is the consent it needs.
   const optInTools = makeCtx(shim, { settings: { tools: { bootstrap: true } } })
   eq('the installer switch registers exactly its own tool',
-    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // A volatile field is written into the same object the loader handed `apply` and
   // then announced, so the behaviour switches must take effect with no remount. The
@@ -1932,19 +1933,19 @@ async function toolTests(tools, shim) {
   const fireToolUpdate = switchableTools.handlers?.get('loader/volatile-update')
   check('the plugin listens for volatile updates that add tools', typeof fireToolUpdate === 'function')
   eq('the installer starts absent while the terminal tool is already there',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.bootstrap = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch on registers its tool live, without a restart',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = false
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch off retires its tool live too',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('and it can come back afterwards',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // The panel's 「复制插件信息」 gets the version from here, so a release never has to
   // edit a string in the client half: the Host half reads its own manifest.
@@ -3738,6 +3739,54 @@ async function toolTests(tools, shim) {
   await rejects('a call with no agent session is refused',
     () => makeTermTool(makeTerminalStub()).execute({ action: 'list' }, {}), /owning agent session/)
 
+  // Most distributions do not ship `rg`, so the fallback is what actually runs on them.
+  // The preferred engine's parser still has to be right, and it can be tested on the
+  // records `rg --json` documents instead of on an installed binary: the two engines
+  // must produce ONE shape, or `wsl-grep` means two different things depending on what
+  // the user happened to install.
+  console.log('\nfile tools: the two search engines parse to one shape')
+  {
+    const rgBody = [
+      JSON.stringify({ type: 'begin', data: { path: { text: 'src/a.ts' } } }),
+      JSON.stringify({ type: 'match', data: { path: { text: 'src/a.ts' }, lines: { text: 'const x = 1\n' }, line_number: 12 } }),
+      JSON.stringify({ type: 'context', data: { path: { text: 'src/a.ts' }, lines: { text: 'noise\n' }, line_number: 13 } }),
+      JSON.stringify({
+        type: 'match',
+        data: { path: { bytes: Buffer.from('src/中文.ts', 'utf8').toString('base64') }, lines: { text: 'y\n' }, line_number: 3 },
+      }),
+      JSON.stringify({ type: 'summary', data: { stats: {} } }),
+    ].join('\n')
+    const rg = parseRgJson(rgBody)
+    eq('rg json: only match records become results', rg.length, 2)
+    eq('rg json: the path, the line number and the line survive',
+      JSON.stringify(rg[0]), JSON.stringify({ file: 'src/a.ts', line: 12, text: 'const x = 1' }))
+    eq('rg json: a non-UTF-8 path arrives base64-encoded and is decoded', rg[1].file, 'src/中文.ts')
+    eq('rg json: a malformed stream yields no matches instead of throwing',
+      parseRgJson('{"type":"match","data":{}}\nnot json at all\n').length, 0)
+
+    const grep = parseGrepZ('src/a.ts\u000012:const x = 1\nsrc/b.ts\u00003:y\n')
+    eq('grep -Z: every line is one match', grep.length, 2)
+    eq('grep -Z: the NUL is what separates a path from a line number',
+      JSON.stringify(grep[0]), JSON.stringify({ file: 'src/a.ts', line: 12, text: 'const x = 1' }))
+    eq('grep -Z: a colon in a path does not confuse it', parseGrepZ('a:b.ts\u00007:z\n')[0].file, 'a:b.ts')
+
+    eq('a line under the preview cap is returned untouched', previewLine('short', 2000), 'short')
+    check('a line over the cap is cut and marked', previewLine('x'.repeat(3000), 2000).endsWith('…'))
+    const wide = previewLine('中'.repeat(1000), 2000)
+    check('the cut never splits a multi-byte character',
+      !wide.includes('\ufffd') && Buffer.byteLength(wide, 'utf8') <= 2003, `${Buffer.byteLength(wide, 'utf8')} bytes`)
+
+    const script = grepScript({ path: '~/src', pattern: 'a b', include: '*.ts' })
+    check('the script prefers rg when the distribution has it', script.includes('command -v rg'))
+    check('and falls back to grep -E with a NUL-separated name', script.includes('grep -r -n -I -H -Z -E'))
+    check('the include reaches both engines', script.includes("--glob='*.ts'") && script.includes("--include='*.ts'"))
+    check('a pattern with a space stays one word', script.includes("--regexp='a b'") && script.includes("-e 'a b'"))
+    check('the target is quoted once and used from a variable', script.includes("p=~/'src'") && script.includes('"$p"'))
+    const bare = grepScript({ path: '.', pattern: 'x' })
+    check('without an include neither engine gets a filter',
+      !bare.includes('--glob=') && !bare.includes('--include='))
+  }
+
   // The platform's own read/write/edit tools cannot reach a distribution: its home is a 9p
   // share (`\\wsl.localhost\...`) and the write path there dies at the rename that makes the
   // write atomic. These three tools run the same operations INSIDE the distribution instead,
@@ -3842,6 +3891,47 @@ async function toolTests(tools, shim) {
     eq('writing empty content reports zero bytes', emptied.sizeBytes, 0)
     eq('an empty file reads as empty rather than as an error',
       (await tools['wsl-read'].execute({ path: `${fsRoot}/empty.txt` }, {})).content, '')
+
+    // Searching is the fourth file operation, and the only one whose answer depends on
+    // what the distribution has installed. Both engines are asked for the same things,
+    // including the two that a naive shell grep gets wrong: a path containing a colon
+    // (which `-Z` exists for) and a binary file (which must not be returned at all).
+    const grepRoot = `${fsRoot}/grep`
+    await tools['wsl-write'].execute({ path: `${grepRoot}/a.txt`, content: 'alpha\nBeta\nalphabet\n' }, {})
+    await tools['wsl-write'].execute({ path: `${grepRoot}/sub/b.ts`, content: 'const alpha = 1\n// 中文 alpha\n' }, {})
+    await tools['wsl-write'].execute({ path: `${grepRoot}/colon:name.txt`, content: 'alpha with a colon in the name\n' }, {})
+    await tools['wsl-write'].execute({ path: `${grepRoot}/blob.dat`, content: 'alpha\u0000binary\n' }, {})
+
+    const found = await tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot }, {})
+    check('the search says which engine ran', found.engine === 'rg' || found.engine === 'grep', String(found.engine))
+    eq('every match in the tree is found', found.total, 5)
+    eq('and they are grouped into the files that hold them', found.fileCount, 3)
+    check('a path with a colon in it survives the trip',
+      found.matches.some((m) => m.path.endsWith('colon:name.txt')), JSON.stringify(found.matches.map((m) => m.path)))
+    check('a binary file is not searched',
+      found.matches.every((m) => !m.path.endsWith('blob.dat')), JSON.stringify(found.matches.map((m) => m.path)))
+    check('a non-ASCII line comes back intact',
+      found.matches.some((m) => m.line === '// 中文 alpha'), JSON.stringify(found.matches.map((m) => m.line)))
+    eq('a match carries the line it was found on',
+      found.matches.find((m) => m.line === 'alphabet')?.lineNumber, 3)
+    check('a relative target is echoed without a leading ./',
+      found.matches.every((m) => !m.path.startsWith('./')), JSON.stringify(found.matches.map((m) => m.path)))
+
+    const grepText = tools['wsl-grep'].output.render({}, found)[0].text
+    check('the rendered result leads with the count', grepText.startsWith('Found 5 matches'), JSON.stringify(grepText.slice(0, 40)))
+    check('and names each match by file and line', /a\.txt\nLine 1: alpha/.test(grepText), JSON.stringify(grepText.slice(0, 240)))
+
+    const narrowed = await tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: '*.ts' }, {})
+    eq('include restricts the search to one glob', narrowed.total, 2)
+    const nothing = await tools['wsl-grep'].execute({ pattern: 'zzz-not-here', path: grepRoot }, {})
+    eq('a search that finds nothing succeeds with nothing', nothing.total, 0)
+    eq('and says so in one line', tools['wsl-grep'].output.render({}, nothing)[0].text, 'No matches found')
+    await rejects('a missing path is an error, not an empty result',
+      () => tools['wsl-grep'].execute({ pattern: 'alpha', path: `${grepRoot}/nope` }, {}), /no such file or directory/)
+    await rejects('a comma-separated include is refused',
+      () => tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: 'a,b' }, {}), /comma-separated/)
+    await rejects('an empty pattern is refused',
+      () => tools['wsl-grep'].execute({ pattern: '', path: grepRoot }, {}), /non-empty string/)
   } finally {
     await tools.wsl.execute({
       command: `rm -rf ${fsRoot} ~/dsh-fs-smoke`, description: 'remove the file-tool scratch space', allowDangerous: true,
@@ -3875,6 +3965,11 @@ async function toolTests(tools, shim) {
   // atomic-write rename fails. 7100 -> 10300 for the default mount, 8200 -> 11400 with the
   // installer on. Each is under the per-tool ceiling on its own, and each description is
   // short on purpose: it has to say what the tool does that `wsl` cannot, and nothing else.
+  // The tenth (`wsl-grep`) pays for itself differently: it is the only file tool whose
+  // answer depends on what the distribution has installed, so its description has to carry
+  // the one thing a caller cannot discover from the result — that the pattern must be valid
+  // in BOTH `rg` and `grep -E`. Measured 11147 / 12202; the ceilings below are that rounded
+  // up, which is the whole ratchet: 300 chars of headroom, not a target.
   console.log('\nmodel-facing catalog budget')
   let catalog = 0
   for (const [name, tool] of Object.entries(tools)) {
@@ -3882,7 +3977,7 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 10_300, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 11_200, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
   // The installer is absent from the default mount, so its cost is measured on a mount that
   // switches it on: a tool that does not exist costs nothing, but an enabled one has to fit
   // the same ceiling as the others.
@@ -3892,7 +3987,7 @@ async function toolTests(tools, shim) {
     optInCatalog += cost
     check(`${name}: catalog cost within budget with every switch on`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost with every tool switched on within budget', optInCatalog <= 11_400, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
+  check('total catalog cost with every tool switched on within budget', optInCatalog <= 12_300, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
   // The installer's own description is the only place the model learns that a
   // second call with `dryRun: false` is what installs, so that phrase is load-bearing.
   check('the installer says a second call is what installs',
@@ -6648,7 +6743,7 @@ try {
   const tools = makeCtx(shim, { jobs, settings: { tools: { doctor: true } } })
   const defaultMount = makeCtx(shim, { jobs })
   check('the default mount registers the file tools, the read-only tools and the terminal tool, not the opt-in ones',
-    Object.keys(defaultMount).sort().join(',') === 'wsl,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(defaultMount).join(','))
+    Object.keys(defaultMount).sort().join(',') === 'wsl,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(defaultMount).join(','))
   await unitTests()
   await terminalUnitTests()
   await bridgeUnitTests()

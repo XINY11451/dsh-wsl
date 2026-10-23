@@ -54,6 +54,7 @@ import { createWslBootstrapTool } from './lib/tools/wsl-bootstrap.js'
 import { createWslReadTool } from './lib/tools/wsl-read.js'
 import { createWslWriteTool } from './lib/tools/wsl-write.js'
 import { createWslEditTool } from './lib/tools/wsl-edit.js'
+import { createWslGrepTool } from './lib/tools/wsl-grep.js'
 import { createWslTermTool } from './lib/tools/wsl-term.js'
 import { createLazyTerminalTransport } from './lib/pty-transport.js'
 import { answerJson, isJsonRequest, readJsonBody } from './lib/http.js'
@@ -141,6 +142,7 @@ function defineConfig(Schema) {
     read: Schema.boolean().default(true).description('注册 `wsl-read` 工具：读取发行版内的文本文件，可按行分页；二进制与非 UTF-8 文件明确报错，不返回乱码。').volatile(),
     write: Schema.boolean().default(true).description('注册 `wsl-write` 工具：写入发行版内的文本文件，整文件替换；先写同目录临时文件再改名，失败不留半截文件。').volatile(),
     edit: Schema.boolean().default(true).description('注册 `wsl-edit` 工具：在发行版内的文件里做精确字符串替换；要求唯一匹配，文件须为 2 MiB 以内的 UTF-8 文本。').volatile(),
+    grep: Schema.boolean().default(true).description('注册 `wsl-grep` 工具：在发行版内按正则搜索文件内容，按文件分组返回行号；有 `rg` 用 `rg`，没有则退回 GNU `grep -E`。').volatile(),
   }).description('要注册哪些工具；改动即时生效（面板开关一拨，工具就出现或消失，不需要重启）。'),
   backgroundJobs: Schema.boolean().default(true).description('允许长任务以 `runInBackground` 后台执行，结果由内置 job 工具读取。').volatile(),
   translatePaths: Schema.boolean().default(true).description('命令中的 Windows 路径默认转为 `/mnt/...`。').volatile(),
@@ -703,6 +705,11 @@ export function apply(ctx, settings = {}) {
     read: () => createWslReadTool({ config, runner }),
     write: () => createWslWriteTool({ config, runner }),
     edit: () => createWslEditTool({ config, runner }),
+    // Searching is the one file operation whose answer depends on what the distribution has
+    // installed: `rg` when present, GNU `grep -E` otherwise. Doing it here rather than through
+    // `wsl` keeps the result grouped by file with line numbers, which a raw shell grep cannot
+    // promise once a path contains a colon.
+    grep: () => createWslGrepTool({ config, runner }),
     // The terminal tool has NO switch: driving a shell IS the thing it exists for, and on a build
     // where the sidebar cannot be joined it opens its own shell instead. It reads the transport
     // lazily, so a build with neither generation still mounts this plugin and reports that
