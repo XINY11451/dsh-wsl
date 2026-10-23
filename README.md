@@ -24,8 +24,8 @@ of the speed (see [Notes](#notes)).
 
 ## Tools
 
-The plugin registers six tools (only `wsl-bootstrap` has a switch of its own, and it is
-OFF by default):
+The plugin registers nine tools. Each has a switch of its own except `wsl-term`, and
+`wsl-doctor` and `wsl-bootstrap` are OFF by default:
 
 | Tool | Purpose |
 |---|---|
@@ -35,6 +35,9 @@ OFF by default):
 | `wsl-doctor` | Compare what a project needs with what the distribution has — including commands that are really Windows binaries. Read-only. **Off by default** (turn it on when diagnosing a project). |
 | `wsl-bootstrap` | Install the missing toolchain inside the distribution, from a fixed recipe list, plan first. |
 | `wsl-term` | Work in the session's terminal: one shell per piece of work, with a record of each above the composer. |
+| `wsl-read` | Read a text file inside the distribution, whole or by line range. Binary and non-UTF-8 files are refused. |
+| `wsl-write` | Write a text file inside the distribution, atomically, creating parents. |
+| `wsl-edit` | Replace one unique string in a text file inside the distribution. |
 
 ### `wsl`
 
@@ -258,6 +261,40 @@ Reach for it only when the work needs **one shell across several steps** — a l
 watching go by, an interactive program, a directory or environment that has to persist. For
 everything self-contained the plain `wsl` tool is the better deal: a fresh shell per call runs
 in parallel, needs no terminal at all, and never takes the keyboard away from you.
+
+### `wsl-read`, `wsl-write`, `wsl-edit`
+
+A distribution's files are reachable from Windows through `\\wsl.localhost\<distro>\...`, but
+that share cannot be **written** through the platform's file tools: they publish a write by
+renaming a temporary file into place, and that rename fails on the 9p share (`ENOTSUP`), while
+the DACL copy they do first fails with `GetFileSecurityW EIO`. The path looks like a normal
+Windows path and is not one, so these three tools run the same operations **inside** the
+distribution instead — through the same launcher `wsl` uses, so there is no second transport
+and no SMB, and they work on `/mnt/c/...` too.
+
+```
+wsl-read({ path: '~/project/src/main.js' })                    → the whole file
+wsl-read({ path: '/var/log/syslog', offset: 200, limit: 40 })  → lines 200-239, and says so
+wsl-write({ path: '~/notes/today.md', content: '…' })          → creates parents, replaces the file
+wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port": 8080' })
+                                                               → exactly one match, or it refuses
+```
+
+Four things worth knowing:
+
+- **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
+  with a message instead of being returned as mojibake. The workaround is the `wsl` tool
+  (`base64`, `od`, `cp`), which is also what to use for anything these three do not cover.
+- **A write is atomic and keeps the mode.** Content goes to a temporary file in the same
+  directory and is renamed over the target, so an interrupted write leaves the old file
+  intact; the old mode is copied first, so a `755` script stays executable.
+- **`edit` is not a regexp.** `oldString` must appear exactly once (or `replaceAll: true`
+  must be given), and `$&`, `$1` and backticks in `newString` are literal text. An edit reads
+  the file, checks that the bytes it holds match the size the shell reported — which is also
+  how a file that changed mid-read is caught — and only then writes.
+- **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
+  these add no new power; what they add is that the model does not have to compose a shell
+  command, and that the result is structured instead of screen-scraped.
 
 ## Running privileged commands (`asRoot`)
 
@@ -518,9 +555,10 @@ the same reply appears in the client.
 ## Configuration
 
 The panel's switches and value fields (`tools.wsl`, `tools.path`, `tools.env`,
-`tools.doctor`, `tools.bootstrap`, `backgroundJobs`, `translatePaths`,
-`startInSessionWorkspace`, `workdir`, `dangerGuard`, `allowRoot`, `distro`,
-`timeoutMs`) live in the profile patch and take effect as described on each row.
+`tools.doctor`, `tools.bootstrap`, `tools.read`, `tools.write`, `tools.edit`,
+`backgroundJobs`, `translatePaths`, `startInSessionWorkspace`, `workdir`, `dangerGuard`,
+`allowRoot`, `distro`, `timeoutMs`) live in the profile patch and take effect as described on
+each row.
 Two of them have no environment variable on purpose: `dangerGuard` (its OFF
 position is the footgun) and `allowRoot` (WSL's root needs no password, so the
 switch IS the authorisation). The environment layer:

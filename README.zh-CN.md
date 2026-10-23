@@ -18,7 +18,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 
 ## 工具
 
-插件注册六个工具（各有开关；诊断用的 `wsl-doctor` 与安装用的 `wsl-bootstrap` **默认关**）：
+插件注册九个工具。除 `wsl-term` 外每个都有独立开关，其中 `wsl-doctor` 与 `wsl-bootstrap` **默认关**：
 
 | 工具 | 用途 |
 |---|---|
@@ -28,6 +28,9 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 | `wsl-doctor` | 对照项目清单与发行版实际能力，指出缺什么——包括那些其实是 Windows 二进制的命令。只读，**默认关**（需要诊断时再开） |
 | `wsl-bootstrap` | 按固定配方在发行版里补装缺失的工具链，先出计划再动手 |
 | `wsl-term` | 在本会话的终端里工作：一件事一个 shell，每件事都在输入框上方留下记录 |
+| `wsl-read` | 读取发行版里的文本文件，整份或按行范围；二进制与非 UTF-8 直接拒绝 |
+| `wsl-write` | 写入发行版里的文本文件，原子替换，父目录自动创建 |
+| `wsl-edit` | 在发行版里的文件中替换唯一匹配的字符串 |
 
 ### `wsl`
 
@@ -209,6 +212,34 @@ dock 里也会列出**你打开的终端**，标注为「用户建立的终端�
 
 它只在**需要同一个 shell 跨多步**时才值得用 —— 想看着它跑完的长构建、交互式程序、必须保留的目录或环境。
 自洽的命令交给 `wsl` 更划算：每次全新 shell、可以并行、根本不需要终端，也不会把键盘从你手里拿走。
+
+### `wsl-read`、`wsl-write`、`wsl-edit`
+
+发行版里的文件在 Windows 侧可以通过 `\\wsl.localhost\<发行版>\...` 访问，但那是个 **9p 共享，写不进去**：
+平台的读写工具靠"先写临时文件再改名"来保证原子性，而这个改名在 9p 上直接失败（`ENOTSUP`），
+它之前那次 DACL 复制则报 `GetFileSecurityW EIO`。这个路径看起来像 Windows 路径，其实不是，
+所以这三个工具改成**在发行版内部**完成同样的操作——走的是 `wsl` 用的同一个启动器，
+没有第二套传输、不依赖 SMB，`/mnt/c/...` 上的文件一样能读写。
+
+```
+wsl-read({ path: '~/project/src/main.js' })                    → 整份文件
+wsl-read({ path: '/var/log/syslog', offset: 200, limit: 40 })  → 第 200-239 行，返回时标明是这一段
+wsl-write({ path: '~/notes/today.md', content: '…' })          → 自动建父目录，整文件替换
+wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port": 8080' })
+                                                               → 唯一匹配才动手，否则拒绝
+```
+
+有几点要知道：
+
+- **只处理文本，而且会明说。** 二进制文件、或不是合法 UTF-8 的文件会被**拒绝**并给出原因，而不是把乱码
+  当内容返回。这类事情交给 `wsl`（`base64`、`od`、`cp`），它也是这三个工具覆盖不到时的出口。
+- **写入是原子的，而且保留权限。** 内容先写进同目录的临时文件，再改名覆盖目标，所以写到一半中断也不会
+  毁掉原文件；写之前会复制原文件的权限，`755` 的脚本改完还是 `755`。
+- **`edit` 不是正则。** `oldString` 必须**恰好出现一次**（否则要用 `replaceAll: true`），
+  `newString` 里的 `$&`、`$1` 和反引号都是字面文本。编辑会先读文件、核对自己拿到的字节数与 shell
+  报告的大小是否一致——文件在读取途中被改动就是这样被发现的——确认无误后才写回。
+- **这是便利，不是沙箱。** `wsl` 本来就能写你有权限写的任何文件，所以这三个工具没有增加新的能力；
+  它们增加的是"模型不必自己拼 shell 命令"，以及"结果是有结构的，而不是靠解析屏幕"。
 
 ## 以 root 执行（`asRoot`）
 
@@ -418,8 +449,9 @@ token）。按 `Ctrl+C` 只是停止等待，那一轮会在客户端里继续�
 ## 配置
 
 面板里的开关与取值字段（`tools.wsl`、`tools.path`、`tools.env`、`tools.doctor`、
-`tools.bootstrap`、`backgroundJobs`、`translatePaths`、`startInSessionWorkspace`、`workdir`、
-`dangerGuard`、`allowRoot`、`distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
+`tools.bootstrap`、`tools.read`、`tools.write`、`tools.edit`、`backgroundJobs`、
+`translatePaths`、`startInSessionWorkspace`、`workdir`、`dangerGuard`、`allowRoot`、
+`distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
 其中两项**故意没有环境变量**：`dangerGuard`（它的关闭位置本身就是风险）与 `allowRoot`
 （WSL 的 root 免密，所以那项开关就是授权本身）。环境变量这一层：
 
