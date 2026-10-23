@@ -55,6 +55,18 @@ const CONFIG = resolveConfig({})
 const MAX_OUT = CONFIG.maxOutputBytes
 const render = (value) => formatResult(value, MAX_OUT)
 
+// Runs one command outside the plugin's own seams, for the handful of facts the suite has
+// to learn about the machine it is running on (the default distribution, its home).
+function machineFact(program, args) {
+  return new Promise((done) => {
+    const child = spawn(program, args, { env: { ...process.env, WSL_UTF8: '1' } })
+    const out = []
+    child.stdout.on('data', (chunk) => out.push(chunk))
+    child.on('close', () => done(Buffer.concat(out).toString('utf8').trim()))
+    child.on('error', () => done(''))
+  })
+}
+
 // --- tiny test harness -----------------------------------------------------
 
 let passed = 0
@@ -1062,8 +1074,8 @@ async function unitTests() {
   // is asserted here rather than left to the schema's word. `wsl-term` has no switch at
   // all — opening a terminal in the sidebar is the consent it needs — so it is not in
   // this object and cannot be switched off.
-  eq('the tool switches default to the read-only set on and the installer off',
-    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,true,false')
+  eq('the tool switches default to the read-only and file tools on and the installer off',
+    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,true,false,true,true,true')
   check('and the terminal tool has no switch of its own',
     resolveConfig({}, {}).tools.term === undefined
     && resolveConfig({}, { tools: { term: false } }).tools.term === undefined)
@@ -1499,6 +1511,14 @@ async function terminalUnitTests() {
 // --- tool-level tests ------------------------------------------------------
 
 async function toolTests(tools, shim) {
+  // Facts about THIS machine, read rather than assumed. A hard-coded `/home/xiny` or
+  // `Ubuntu-22.04` turns "the runner passes -d through" into "the author happens to have
+  // that distro installed", and the suite then fails on every other machine for reasons
+  // that have nothing to do with the code under test.
+  const REAL_HOME = (await machineFact('wsl.exe', ['-e', 'bash', '-lc', 'printf %s "$HOME"'])) || '/home'
+  const REAL_DISTRO = (await machineFact('wsl.exe', ['-l', '-q']))
+    .split('\n').map((line) => line.trim()).filter((line) => line !== '')[0] ?? 'Ubuntu-22.04'
+
   console.log('\nwsl: stdout / exit codes')
   const ok = await tools.wsl.execute({ command: 'echo hello', description: 'echo' })
   eq('exit code 0', ok.exitCode, 0)
@@ -1527,7 +1547,7 @@ async function toolTests(tools, shim) {
 
   console.log('\nwsl: workdir')
   const tilde = await tools.wsl.execute({ command: 'pwd', description: 'home', workdir: '~/.' })
-  eq('tilde workdir resolves', tilde.stdout.trim(), '/home/xiny')
+  eq('tilde workdir resolves', tilde.stdout.trim(), REAL_HOME)
   const spaced = await tools.wsl.execute({ command: 'pwd', description: 'spaced', workdir: 'C:\\Program Files' })
   eq('windows workdir with a space resolves', spaced.stdout.trim(), '/mnt/c/Program Files')
   const spacedForward = await tools.wsl.execute({ command: 'pwd', description: 'spaced', workdir: 'C:/Program Files' })
@@ -1585,22 +1605,30 @@ async function toolTests(tools, shim) {
   eq('the control mount rewrites it', rewrittenByDefault.stdout.trim(), '/mnt/c/keep/me')
 
   const wslOnlyTools = makeCtx(shim, {
-    settings: { tools: { wsl: true, path: false, env: false, doctor: false, bootstrap: false } },
+    settings: {
+      tools: {
+        wsl: true, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false,
+      },
+    },
   })
   eq('a tool switch removes exactly that tool, and the switchless terminal tool stays',
     Object.keys(wslOnlyTools).sort().join(','), 'wsl,wsl-term')
   const allOffTools = makeCtx(shim, {
-    settings: { tools: { wsl: false, path: false, env: false, doctor: false, bootstrap: false } },
+    settings: {
+      tools: {
+        wsl: false, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false,
+      },
+    },
   })
   eq('with every switch off, only the switchless terminal tool remains',
     Object.keys(allOffTools).sort().join(','), 'wsl-term')
-  eq('the control mount registers the four read-only tools and the terminal tool',
-    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-env,wsl-path,wsl-term')
+  eq('the control mount registers the file tools, the read-only tools and the terminal tool',
+    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
   // The installer is absent unless asked for: it adds software. The terminal tool is not
   // optional and not switchable — a terminal the user opens is the consent it needs.
   const optInTools = makeCtx(shim, { settings: { tools: { bootstrap: true } } })
   eq('the installer switch registers exactly its own tool',
-    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-env,wsl-path,wsl-term')
+    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // A volatile field is written into the same object the loader handed `apply` and
   // then announced, so the behaviour switches must take effect with no remount. The
@@ -1629,19 +1657,19 @@ async function toolTests(tools, shim) {
   const fireToolUpdate = switchableTools.handlers?.get('loader/volatile-update')
   check('the plugin listens for volatile updates that add tools', typeof fireToolUpdate === 'function')
   eq('the installer starts absent while the terminal tool is already there',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-env,wsl-path,wsl-term')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.bootstrap = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch on registers its tool live, without a restart',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-env,wsl-path,wsl-term')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = false
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch off retires its tool live too',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-env,wsl-path,wsl-term')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('and it can come back afterwards',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-env,wsl-path,wsl-term')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // The panel's 「复制插件信息」 gets the version from here, so a release never has to
   // edit a string in the client half: the Host half reads its own manifest.
@@ -2019,9 +2047,9 @@ async function toolTests(tools, shim) {
   await tools.wsl.execute({ command: 'true', description: 'default distro' })
   const defaultArgv = shim.calls.at(-1).argv
   check('no distro configured drops -d (system default)', !defaultArgv.includes('-d'), defaultArgv.slice(0, 4).join(' '))
-  await tools.wsl.execute({ command: 'true', description: 'pinned', distro: 'Ubuntu-22.04' })
+  await tools.wsl.execute({ command: 'true', description: 'pinned', distro: REAL_DISTRO })
   const pinnedArgv = shim.calls.at(-1).argv
-  eq('an explicit distro passes -d', pinnedArgv.slice(0, 4).join(' '), 'wsl.exe -d Ubuntu-22.04 -e')
+  eq('an explicit distro passes -d', pinnedArgv.slice(0, 4).join(' '), `wsl.exe -d ${REAL_DISTRO} -e`)
 
   console.log('\nwsl: presentCall shows the directory actually used')
   const card = tools.wsl.presentCall({ command: 'pwd', description: 'x', workdir: 'C:\\Program Files' })
@@ -2115,7 +2143,7 @@ async function toolTests(tools, shim) {
       eq('without a session it falls back to the process cwd',
         noSession.stdout.trim(), windowsPathToWsl(process.cwd()))
       const overridden = await sessionTools.wsl.execute({ command: 'pwd', description: 'explicit wins', workdir: '~/.' }, exec)
-      eq('an explicit workdir still wins', overridden.stdout.trim(), '/home/xiny')
+      eq('an explicit workdir still wins', overridden.stdout.trim(), REAL_HOME)
     } finally {
       rmSync(sessionDir, { recursive: true, force: true })
     }
@@ -2381,8 +2409,8 @@ async function toolTests(tools, shim) {
   console.log('\nwsl-path')
   const toLinux = await tools['wsl-path'].execute({ path: 'C:\\Program Files\\Git' })
   eq('windows -> linux', toLinux.converted, '/mnt/c/Program Files/Git')
-  const toWindows = await tools['wsl-path'].execute({ path: '/home/xiny' })
-  check('linux -> windows', /Ubuntu-22\.04/.test(toWindows.converted) && /home/.test(toWindows.converted), toWindows.converted)
+  const toWindows = await tools['wsl-path'].execute({ path: `${REAL_HOME}/x` })
+  check('linux -> windows', new RegExp(REAL_DISTRO.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(toWindows.converted) && /home/.test(toWindows.converted), toWindows.converted)
   const forced = await tools['wsl-path'].execute({ path: '/tmp', direction: 'win' })
   check('forced direction', /tmp/.test(forced.converted), forced.converted)
   const tildePath = await tools['wsl-path'].execute({ path: '~' })
@@ -2391,7 +2419,7 @@ async function toolTests(tools, shim) {
 
   console.log('\nwsl-env')
   const env = await tools['wsl-env'].execute({})
-  check('reports the distro', env.summary.includes('distro: Ubuntu-22.04'), env.summary)
+  check('reports the distro', env.summary.includes(`distro: ${REAL_DISTRO}`), env.summary)
   check('reports the kernel', /Linux \d/.test(env.summary), env.summary)
   check('reports the architecture', /Linux \S+ \S+/.test(env.summary), env.summary.split('\n')[1])
   check('reports cpu count', /nproc: \d+/.test(env.summary), env.summary)
@@ -3246,6 +3274,122 @@ async function toolTests(tools, shim) {
   await rejects('a call with no agent session is refused',
     () => makeTermTool(makeTerminalStub()).execute({ action: 'list' }, {}), /owning agent session/)
 
+  // The platform's own read/write/edit tools cannot reach a distribution: its home is a 9p
+  // share (`\\wsl.localhost\...`) and the write path there dies at the rename that makes the
+  // write atomic. These three tools run the same operations INSIDE the distribution instead,
+  // so what they are tested for is file semantics — text versus binary, a file versus a
+  // directory, a unique match versus an ambiguous one — not the transport, which `wsl` already
+  // covers. Every path here is created by the test: nothing depends on the author's home.
+  console.log('\nfile tools: read, write and edit inside the distribution')
+  const fsRoot = (await tools.wsl.execute({
+    command: 'mktemp -d', description: 'a scratch directory for the file-tool tests',
+  })).stdout.trim()
+  check('the scratch directory is absolute', fsRoot.startsWith('/'), fsRoot)
+  const samplePath = `${fsRoot}/sample.txt`
+  const sampleText = '第一行：中文\nsecond "quoted" line\n$HOME and `ticks`\nno trailing newline'
+  try {
+    const created = await tools['wsl-write'].execute({ path: samplePath, content: sampleText }, {})
+    check('write reports a file it created', created.created === true, JSON.stringify(created))
+    eq('write reports the bytes it wrote', created.sizeBytes, Buffer.byteLength(sampleText))
+    eq('write resolves the path to one absolute location', created.resolvedPath, samplePath)
+
+    const whole = await tools['wsl-read'].execute({ path: samplePath }, {})
+    eq('read returns the exact bytes, adding no line numbers', whole.content, sampleText)
+    eq('read counts an unterminated last line', whole.totalLines, 4)
+    check('read renders a range header the model can cite',
+      tools['wsl-read'].output.render({}, whole)[0].text.startsWith(`${samplePath}  [lines 1-4 of 4`),
+      tools['wsl-read'].output.render({}, whole)[0].text.slice(0, 64))
+
+    const sliced = await tools['wsl-read'].execute({ path: samplePath, offset: 2, limit: 2 }, {})
+    eq('offset/limit slice by line', sliced.content, 'second "quoted" line\n$HOME and `ticks`\n')
+    eq('the slice reports where it started', sliced.startLine, 2)
+    eq('the slice reports how many lines it holds', sliced.lineCount, 2)
+    eq('the whole file is not re-sent for a slice', sliced.sizeBytes, Buffer.byteLength(sampleText))
+
+    // A directory, a missing path and a binary file are the three ways "read this file"
+    // means something else. Each has its own message, because "failed" is not a diagnosis.
+    await rejects('reading a directory is refused, and says so',
+      () => tools['wsl-read'].execute({ path: fsRoot }, {}), /is a directory/)
+    await rejects('reading a missing path is refused, and says so',
+      () => tools['wsl-read'].execute({ path: `${fsRoot}/not-here.txt` }, {}), /no such file or directory/)
+    await tools['wsl-write'].execute({ path: `${fsRoot}/blob.dat`, content: 'text\u0000more' }, {})
+    await rejects('reading a binary file is refused rather than returned as mojibake',
+      () => tools['wsl-read'].execute({ path: `${fsRoot}/blob.dat` }, {}), /binary file/)
+
+    // The mode is the part a naive rewrite loses: `cat > file` keeps the inode, and a
+    // temp-file-and-rename keeps the CONTENT but replaces the inode. The edit path copies
+    // the old mode onto the new file, so a 755 script stays executable.
+    await tools.wsl.execute({ command: `chmod 755 ${samplePath}`, description: 'make the sample executable' })
+    const edited = await tools['wsl-edit'].execute({
+      path: samplePath, oldString: 'second "quoted" line', newString: 'SECOND line',
+    }, {})
+    eq('edit reports one replacement', edited.replacements, 1)
+    eq('edit reports the byte size before the change', edited.beforeBytes, Buffer.byteLength(sampleText))
+    eq('edit reports the byte size after the change', edited.afterBytes, Buffer.byteLength(sampleText) - 9)
+    eq('edit leaves the file executable',
+      (await tools.wsl.execute({ command: `stat -c %a ${samplePath}`, description: 'read the mode back' })).stdout.trim(),
+      '755')
+    eq('edit wrote exactly the replacement',
+      (await tools['wsl-read'].execute({ path: samplePath }, {})).content,
+      sampleText.replace('second "quoted" line', 'SECOND line'))
+
+    // `$&`, `$1` and a backtick are literal text here: the replacement is not a shell
+    // string and not a regexp replacement pattern, so nothing in it can expand.
+    const literal = await tools['wsl-edit'].execute({
+      path: samplePath, oldString: 'SECOND line', newString: 'cost: $& $1 `x`',
+    }, {})
+    eq('a replacement full of metacharacters is inserted literally', literal.replacements, 1)
+    check('the metacharacters survived',
+      (await tools['wsl-read'].execute({ path: samplePath }, {})).content.includes('cost: $& $1 `x`'))
+
+    await rejects('an ambiguous match is refused rather than guessed',
+      () => tools['wsl-edit'].execute({ path: samplePath, oldString: 'a', newString: 'b' }, {}),
+      /appears \d+ times/)
+    await rejects('a match that is not there is refused',
+      () => tools['wsl-edit'].execute({ path: samplePath, oldString: 'zzz-not-here', newString: 'b' }, {}),
+      /was not found/)
+    await rejects('an identical old and new string is refused as a no-op',
+      () => tools['wsl-edit'].execute({ path: samplePath, oldString: 'x', newString: 'x' }, {}),
+      /nothing to change/)
+    const every = await tools['wsl-edit'].execute({
+      path: samplePath, oldString: '\n', newString: '\n\n', replaceAll: true,
+    }, {})
+    eq('replaceAll counts every match it made', every.replacements, 3)
+
+    // `~` and a nested directory that does not exist yet: the first is what a model
+    // writes when it means the home, the second is what it writes when it means "put it
+    // there", and both have to work without a shell call to prepare them.
+    // A previous run may have left this tree behind, and the assertion below is that THIS
+    // write creates the parents — so the tree has to be absent before it.
+    await tools.wsl.execute({ command: 'rm -rf ~/dsh-fs-smoke', description: 'clear a previous run', allowDangerous: true })
+    const nested = await tools['wsl-write'].execute({
+      path: '~/dsh-fs-smoke/深 层/文件.txt', content: 'tilde ok',
+    }, {})
+    check('write expands `~` to the home directory', /^\/home\/[^/]+\/dsh-fs-smoke\/深 层\/文件\.txt$/.test(nested.resolvedPath), nested.resolvedPath)
+    check('write creates the missing parent directories', nested.created === true, JSON.stringify(nested))
+    eq('the nested file reads back', (await tools['wsl-read'].execute({ path: nested.resolvedPath }, {})).content, 'tilde ok')
+
+    const replaced = await tools['wsl-write'].execute({ path: samplePath, content: 'replaced\n' }, {})
+    check('write reports replacing an existing file', replaced.created === false, JSON.stringify(replaced))
+    eq('the replacement content is what was written',
+      (await tools['wsl-read'].execute({ path: samplePath }, {})).content, 'replaced\n')
+
+    const emptied = await tools['wsl-write'].execute({ path: `${fsRoot}/empty.txt`, content: '' }, {})
+    eq('writing empty content reports zero bytes', emptied.sizeBytes, 0)
+    eq('an empty file reads as empty rather than as an error',
+      (await tools['wsl-read'].execute({ path: `${fsRoot}/empty.txt` }, {})).content, '')
+  } finally {
+    await tools.wsl.execute({
+      command: `rm -rf ${fsRoot} ~/dsh-fs-smoke`, description: 'remove the file-tool scratch space', allowDangerous: true,
+    })
+  }
+  check('the file tools leave no scratch space behind',
+    (await tools.wsl.execute({
+      command: `test -e ${fsRoot} || echo gone; test -e ~/dsh-fs-smoke || echo gone2`,
+      description: 'confirm the scratch space is gone',
+    })).stdout.trim(),
+    'gone\ngone2')
+
   // The model pays for description + parameters in EVERY request, so the budget
   // is a real limit. It is asserted, not aspirational: a future edit that
   // re-bloats the catalog fails here instead of quietly costing tokens forever.
@@ -3262,6 +3406,11 @@ async function toolTests(tools, shim) {
   // protocol, which is prose the model needs to choose correctly: 5600 -> 6600 for the
   // default mount, 7300 -> 7700 with the installer on. Still tight enough that the next
   // paragraph of prose has to be paid for by trimming something.
+  // The seventh, eighth and ninth tools (`wsl-read`, `wsl-write`, `wsl-edit`) are the file
+  // tools the platform's own cannot be, because a distribution's home is a 9p share whose
+  // atomic-write rename fails. 7100 -> 10300 for the default mount, 8200 -> 11400 with the
+  // installer on. Each is under the per-tool ceiling on its own, and each description is
+  // short on purpose: it has to say what the tool does that `wsl` cannot, and nothing else.
   console.log('\nmodel-facing catalog budget')
   let catalog = 0
   for (const [name, tool] of Object.entries(tools)) {
@@ -3269,7 +3418,7 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 7_100, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 10_300, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
   // The installer is absent from the default mount, so its cost is measured on a mount that
   // switches it on: a tool that does not exist costs nothing, but an enabled one has to fit
   // the same ceiling as the others.
@@ -3279,7 +3428,7 @@ async function toolTests(tools, shim) {
     optInCatalog += cost
     check(`${name}: catalog cost within budget with every switch on`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost with every tool switched on within budget', optInCatalog <= 8_200, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
+  check('total catalog cost with every tool switched on within budget', optInCatalog <= 11_400, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
   // The installer's own description is the only place the model learns that a
   // second call with `dryRun: false` is what installs, so that phrase is load-bearing.
   check('the installer says a second call is what installs',
@@ -3486,8 +3635,8 @@ const jobs = makeJobs()
 console.log(`backend: ${useReal ? `real DSH provider (${modulesRoot})` : 'local shim'}`)
 try {
   const tools = makeCtx(shim, { jobs })
-  check('the default mount registers the read-only tools and the terminal tool, not the installer',
-    Object.keys(tools).sort().join(',') === 'wsl,wsl-doctor,wsl-env,wsl-path,wsl-term', Object.keys(tools).join(','))
+  check('the default mount registers the file tools, the read-only tools and the terminal tool, not the installer',
+    Object.keys(tools).sort().join(',') === 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(tools).join(','))
   await unitTests()
   await terminalUnitTests()
   await toolTests(tools, shim)
