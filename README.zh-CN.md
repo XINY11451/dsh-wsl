@@ -18,7 +18,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 
 ## 工具
 
-插件注册六个工具（只有 `wsl-bootstrap` 有独立开关，且**默认关**）：
+插件注册十个工具。除 `wsl-term` 外每个都有独立开关，其中只有 `wsl-bootstrap` **默认关**：
 
 | 工具 | 用途 |
 |---|---|
@@ -28,6 +28,10 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 | `wsl-doctor` | 对照项目清单与发行版实际能力，指出缺什么——包括那些其实是 Windows 二进制的命令。只读 |
 | `wsl-bootstrap` | 按固定配方在发行版里补装缺失的工具链，先出计划再动手 |
 | `wsl-term` | 在本会话的终端里工作：一件事一个 shell，每件事都在输入框上方留下记录 |
+| `wsl-read` | 读取发行版里的文本文件，整份或按行范围；二进制与非 UTF-8 直接拒绝 |
+| `wsl-write` | 写入发行版里的文本文件，原子替换，父目录自动创建 |
+| `wsl-edit` | 在发行版里的文件中替换唯一匹配的字符串 |
+| `wsl-grep` | 在发行版里按正则搜索文件内容，按文件分组返回带行号的匹配行 |
 
 ### `wsl`
 
@@ -200,6 +204,66 @@ wsl-term({ action: "subtask-done", subtask: "跑通 sta 流程", result: "三条
 它只在**需要同一个 shell 跨多步**时才值得用 —— 想看着它跑完的长构建、交互式程序、必须保留的目录或环境。
 自洽的命令交给 `wsl` 更划算：每次全新 shell、可以并行、根本不需要终端，也不会把键盘从你手里拿走。
 
+### `wsl-read`、`wsl-write`、`wsl-edit`
+
+发行版里的文件在 Windows 侧可以通过 `\\wsl.localhost\<发行版>\...` 访问，但那是个 **9p 共享，写不进去**：
+平台的读写工具靠"先写临时文件再改名"来保证原子性，而这个改名在 9p 上直接失败（`ENOTSUP`），
+它之前那次 DACL 复制则报 `GetFileSecurityW EIO`。这个路径看起来像 Windows 路径，其实不是，
+所以这三个工具改成**在发行版内部**完成同样的操作——走的是 `wsl` 用的同一个启动器，
+没有第二套传输、不依赖 SMB，`/mnt/c/...` 上的文件一样能读写。
+
+```
+wsl-read({ path: '~/project/src/main.js' })                    → 整份文件
+wsl-read({ path: '/var/log/syslog', offset: 200, limit: 40 })  → 第 200-239 行，返回时标明是这一段
+wsl-write({ path: '~/notes/today.md', content: '…' })          → 自动建父目录，整文件替换
+wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port": 8080' })
+                                                               → 唯一匹配才动手，否则拒绝
+```
+
+有几点要知道：
+
+- **只处理文本，而且会明说。** 二进制文件、或不是合法 UTF-8 的文件会被**拒绝**并给出原因，而不是把乱码
+  当内容返回。这类事情交给 `wsl`（`base64`、`od`、`cp`），它也是这三个工具覆盖不到时的出口。
+- **写入是原子的，而且保留权限。** 内容先写进同目录的临时文件，再改名覆盖目标，所以写到一半中断也不会
+  毁掉原文件；写之前会复制原文件的权限，`755` 的脚本改完还是 `755`。
+- **`edit` 不是正则。** `oldString` 必须**恰好出现一次**（否则要用 `replaceAll: true`），
+  `newString` 里的 `$&`、`$1` 和反引号都是字面文本。编辑会先读文件、核对自己拿到的字节数与 shell
+  报告的大小是否一致——文件在读取途中被改动就是这样被发现的——确认无误后才写回。
+- **这是便利，不是沙箱。** `wsl` 本来就能写你有权限写的任何文件，所以这三个工具没有增加新的能力；
+  它们增加的是"模型不必自己拼 shell 命令"，以及"结果是有结构的，而不是靠解析屏幕"。
+- **界面上，编辑和写入都是以 diff 呈现的。** `wsl-edit` 执行时，卡片先显示你要求的替换；结束时
+  卡片被换成真正落盘的 hunk，上下各带三行上下文——与平台自带 `edit` 同一张卡片、同样的宽度。
+  `wsl-write` 没有可比的旧内容，所以它的卡片全是新增行，这也正是平台自带 `write` 画的样子。
+  历史里重放时用结果中存下的 hunk 重绘，不需要再读文件。模型读到的仍然是那一行摘要，不是 diff。
+
+### `wsl-grep`
+
+在发行版里搜索文件内容，按文件分组返回带行号的匹配行——参数和结果形状都与平台自带的 `grep` 一致，
+只是指向发行版而不是 Windows：
+
+```
+wsl-grep({ pattern: 'TODO', path: '~/project' })
+wsl-grep({ pattern: 'listen\\(', path: '/etc/nginx', include: '*.conf' })
+```
+
+`pattern` 是正则，`path` 是 Linux 路径（默认当前会话的工作目录），`include` 是**一个**正向 glob
+（`*.ts`、`*.{js,jsx}`），不是列表，也不支持取反——两个引擎都只接受单个过滤条件，传列表只会静默地
+搜错文件。结果上限 250 条匹配、每条预览行 2000 字节；被截断时结果会说明一共看到多少条，需要上下文
+就用 `wsl-read` 读那个文件。
+
+引擎取决于发行版里装了什么：有 `rg` 就用 `rg`（尊重 `.gitignore`、跳过二进制、输出 JSON），否则退回
+GNU `grep -E`——Ubuntu 镜像默认就是后者。这个差异在两处可见，写正则前值得知道：
+
+- **方言。** `rg` 支持 `\d`、`\w`、`\b`，`grep -E` 不支持。用了这些的表达式在一个引擎上能搜到、
+  在另一个上一条也搜不到，所以安全子集是两个都认的那部分。两个引擎都编译不了的表达式会被当作
+  **搜索失败**报出来，而不是"没有匹配"。
+- **忽略规则。** `rg` 会跳过 `.gitignore` 排除的文件，`grep` 不会，所以同一条搜索在两台机器上
+  可能返回不同的文件集合。在意这个差异时，用 `wsl-bootstrap` 把 `ripgrep` 装上。
+
+路径里带冒号正是回退方案要向 `grep` 要 `-Z` 的原因：文件名与行号之间用 NUL 分隔，`a:b.ts` 就还是
+一个路径，而不会被拆成"文件 `a`、第 `b.ts` 行"。二进制文件不会出现在结果里——`grep -I` 与 `rg`
+的默认行为都会跳过它们。
+
 ## 以 root 执行（`asRoot`）
 
 WSL 的 root 不需要密码，因此可以让单次调用以 root 执行（即 `wsl -u root`）。它由面板里的一项开关把关
@@ -368,8 +432,9 @@ patch 层 —— 每次写入前先备份该文件，只重写终端那一行的
 ## 配置
 
 面板里的开关与取值字段（`tools.wsl`、`tools.path`、`tools.env`、`tools.doctor`、
-`tools.bootstrap`、`backgroundJobs`、`translatePaths`、`startInSessionWorkspace`、`workdir`、
-`dangerGuard`、`allowRoot`、`distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
+`tools.bootstrap`、`tools.read`、`tools.write`、`tools.edit`、`tools.grep`、`backgroundJobs`、
+`translatePaths`、`startInSessionWorkspace`、`workdir`、`dangerGuard`、`allowRoot`、
+`distro`、`timeoutMs`）都写在 profile patch 里，各自行上有说明。
 其中两项**故意没有环境变量**：`dangerGuard`（它的关闭位置本身就是风险）与 `allowRoot`
 （WSL 的 root 免密，所以那项开关就是授权本身）。环境变量这一层：
 
@@ -546,7 +611,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 885 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 170 项客户端检查
+npm test          # 995 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 170 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

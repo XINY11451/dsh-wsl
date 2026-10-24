@@ -23,8 +23,8 @@ of the speed (see [Notes](#notes)).
 
 ## Tools
 
-The plugin registers six tools (only `wsl-bootstrap` has a switch of its own, and it is
-OFF by default):
+The plugin registers ten tools. Each has a switch of its own except `wsl-term`, and only
+`wsl-bootstrap` is OFF by default:
 
 | Tool | Purpose |
 |---|---|
@@ -34,6 +34,10 @@ OFF by default):
 | `wsl-doctor` | Compare what a project needs with what the distribution has — including commands that are really Windows binaries. Read-only. |
 | `wsl-bootstrap` | Install the missing toolchain inside the distribution, from a fixed recipe list, plan first. |
 | `wsl-term` | Work in the session's terminal: one shell per piece of work, with a record of each above the composer. |
+| `wsl-read` | Read a text file inside the distribution, whole or by line range. Binary and non-UTF-8 files are refused. |
+| `wsl-write` | Write a text file inside the distribution, atomically, creating parents. |
+| `wsl-edit` | Replace one unique string in a text file inside the distribution. |
+| `wsl-grep` | Search file contents inside the distribution with a regular expression, grouped by file with line numbers. |
 
 ### `wsl`
 
@@ -241,6 +245,80 @@ Reach for it only when the work needs **one shell across several steps** — a l
 watching go by, an interactive program, a directory or environment that has to persist. For
 everything self-contained the plain `wsl` tool is the better deal: a fresh shell per call runs
 in parallel, needs no terminal at all, and never takes the keyboard away from you.
+
+### `wsl-read`, `wsl-write`, `wsl-edit`
+
+A distribution's files are reachable from Windows through `\\wsl.localhost\<distro>\...`, but
+that share cannot be **written** through the platform's file tools: they publish a write by
+renaming a temporary file into place, and that rename fails on the 9p share (`ENOTSUP`), while
+the DACL copy they do first fails with `GetFileSecurityW EIO`. The path looks like a normal
+Windows path and is not one, so these three tools run the same operations **inside** the
+distribution instead — through the same launcher `wsl` uses, so there is no second transport
+and no SMB, and they work on `/mnt/c/...` too.
+
+```
+wsl-read({ path: '~/project/src/main.js' })                    → the whole file
+wsl-read({ path: '/var/log/syslog', offset: 200, limit: 40 })  → lines 200-239, and says so
+wsl-write({ path: '~/notes/today.md', content: '…' })          → creates parents, replaces the file
+wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port": 8080' })
+                                                               → exactly one match, or it refuses
+```
+
+Five things worth knowing:
+
+- **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
+  with a message instead of being returned as mojibake. The workaround is the `wsl` tool
+  (`base64`, `od`, `cp`), which is also what to use for anything these three do not cover.
+- **A write is atomic and keeps the mode.** Content goes to a temporary file in the same
+  directory and is renamed over the target, so an interrupted write leaves the old file
+  intact; the old mode is copied first, so a `755` script stays executable.
+- **`edit` is not a regexp.** `oldString` must appear exactly once (or `replaceAll: true`
+  must be given), and `$&`, `$1` and backticks in `newString` are literal text. An edit reads
+  the file, checks that the bytes it holds match the size the shell reported — which is also
+  how a file that changed mid-read is caught — and only then writes.
+- **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
+  these add no new power; what they add is that the model does not have to compose a shell
+  command, and that the result is structured instead of screen-scraped.
+- **The UI shows an edit and a write as diffs.** While `wsl-edit` runs, its card shows the
+  replacement you asked for; when it finishes the card is replaced by the hunks that were
+  actually applied, three lines of context wide — the same card, and the same width, as the
+  platform's own `edit`. `wsl-write` has no before-image to diff against, so its card is all
+  additions, which is exactly what the platform's own `write` draws. A replayed edit redraws
+  from the hunks stored with the result, so it does not need the file. The model still reads
+  the one-line summary, not the diff.
+
+### `wsl-grep`
+
+Searches file contents inside the distribution and returns the matching lines grouped by file,
+with line numbers — the same arguments and the same result shape as the platform's own `grep`
+tool, pointed at a distribution instead of at Windows:
+
+```
+wsl-grep({ pattern: 'TODO', path: '~/project' })
+wsl-grep({ pattern: 'listen\\(', path: '/etc/nginx', include: '*.conf' })
+```
+
+`pattern` is a regular expression, `path` is a Linux path (default: the session workspace), and
+`include` is **one** positive glob (`*.ts`, `*.{js,jsx}`) — not a list, and negation is not
+supported, because both engines take a single filter and a list would silently search the wrong
+files. Results are capped at 250 matches with 2000 bytes per previewed line; a capped result
+says how many were seen, and `wsl-read` on a matched file gives the surrounding context.
+
+The engine is whichever the distribution has: `rg` when it is installed (it honours
+`.gitignore`, skips binaries, and reports JSON), and GNU `grep -E` otherwise, which is what
+Ubuntu images ship. That difference is visible in two places, and worth knowing before you
+write a pattern:
+
+- **Dialect.** `rg` accepts `\d`, `\w` and `\b`; `grep -E` does not. A pattern using them works
+  on one engine and finds nothing on the other, so the safe subset is the one both understand.
+  A pattern that neither can compile is reported as a search failure, not as "no matches".
+- **Ignore rules.** `rg` skips what `.gitignore` excludes and `grep` does not, so the same
+  search can return different sets of files on two machines. Install `ripgrep`
+  (`wsl-bootstrap` will do it) when that difference matters.
+
+A path containing a colon is why the fallback asks `grep` for `-Z`: the file name and the line
+number are separated by a NUL byte, so `a:b.ts` stays one path instead of becoming `a` on line
+`b.ts`. Binary files are never returned — `grep -I` and `rg`'s own default both skip them.
 
 ## Running privileged commands (`asRoot`)
 
@@ -454,9 +532,10 @@ choose rather than a fixed large value. Same write rules and the same next-start
 ## Configuration
 
 The panel's switches and value fields (`tools.wsl`, `tools.path`, `tools.env`,
-`tools.doctor`, `tools.bootstrap`, `backgroundJobs`, `translatePaths`,
-`startInSessionWorkspace`, `workdir`, `dangerGuard`, `allowRoot`, `distro`,
-`timeoutMs`) live in the profile patch and take effect as described on each row.
+`tools.doctor`, `tools.bootstrap`, `tools.read`, `tools.write`, `tools.edit`, `tools.grep`,
+`backgroundJobs`, `translatePaths`, `startInSessionWorkspace`, `workdir`, `dangerGuard`,
+`allowRoot`, `distro`, `timeoutMs`) live in the profile patch and take effect as described on
+each row.
 Two of them have no environment variable on purpose: `dangerGuard` (its OFF
 position is the footgun) and `allowRoot` (WSL's root needs no password, so the
 switch IS the authorisation). The environment layer:
@@ -625,7 +704,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 885 host checks against real WSL (shim for ctx.subprocess) + 170 client checks
+npm test          # 995 host checks against real WSL (shim for ctx.subprocess) + 170 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
