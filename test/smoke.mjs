@@ -25,7 +25,7 @@ import { apply, buildConfig } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
 import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
-import { grepScript, parseGrepZ, parseRgJson, previewLine } from '../lib/fs-ops.js'
+import { grepScript, parseGrepZ, parseRgJson, previewLine, readScript, writeScript } from '../lib/fs-ops.js'
 import { computeHunks, HUNK_CONTEXT } from '../lib/hunks.js'
 import { destructiveReason } from '../lib/guard.js'
 import { channelSessionOf, createChannel, firstUserLine, SAY_PREFIX, sessionRecordOf, titlesOf, validSessionId, walletText } from '../lib/channel.js'
@@ -3835,6 +3835,30 @@ async function toolTests(tools, shim) {
       !bare.includes('--glob=') && !bare.includes('--include='))
   }
 
+  // Two properties of the file scripts that are cheaper to read than to run, and
+  // that a reader of the output could not otherwise tell apart.
+  console.log('\nfile tools: the scripts ask before they assume')
+  {
+    // A read prints the file's byte count BEFORE it can know the file is readable.
+    // Without the guard the header would report a size of 0 for a file the caller
+    // may not open, which is indistinguishable from an empty file.
+    const read = readScript('/etc/shadow', 1, 10)
+    const guardAt = read.indexOf('[ ! -r "$p" ]')
+    check('the read refuses an unreadable file before counting its bytes',
+      guardAt !== -1 && guardAt < read.indexOf('wc -c'), read)
+    check('and says why, with its own exit code', read.includes('permission denied') && read.includes('exit 10'))
+    check('an unreadable file is not reported as an empty one',
+      !read.includes('exit 0\nprintf'), read)
+
+    const plain = writeScript('/tmp/a')
+    check('a plain write copies the mode only', plain.includes('chmod --reference=') && !plain.includes('chown'))
+    const owned = writeScript('/tmp/a', { keepOwner: true })
+    check('keepOwner copies the owner as well', owned.includes('chown --reference="$p" -- "$t"'), owned)
+    check('keepOwner still copies the mode', owned.includes('chmod --reference="$p" -- "$t"'))
+    check('a failed chown never fails the write',
+      owned.includes('chown --reference="$p" -- "$t" 2>/dev/null || :'), owned)
+  }
+
   // The platform's own read/write/edit tools cannot reach a distribution: its home is a 9p
   // share (`\\wsl.localhost\...`) and the write path there dies at the rename that makes the
   // write atomic. These three tools run the same operations INSIDE the distribution instead,
@@ -4023,6 +4047,66 @@ async function toolTests(tools, shim) {
       () => tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: 'a,b' }, {}), /comma-separated/)
     await rejects('an empty pattern is refused',
       () => tools['wsl-grep'].execute({ pattern: '', path: grepRoot }, {}), /non-empty string/)
+
+    // The panel switch is the authorisation for root in the file tools too, and a
+    // refusal must never be a silent downgrade to the user account: a caller that
+    // asked for root and got a permission error would look for the cause in the
+    // wrong place.
+    for (const [name, args] of [
+      ['wsl-read', { path: samplePath }],
+      ['wsl-write', { path: `${fsRoot}/root-off.txt`, content: 'x' }],
+      ['wsl-edit', { path: samplePath, oldString: 'replaced', newString: 'again' }],
+      ['wsl-grep', { pattern: 'alpha', path: fsRoot }],
+    ]) {
+      await rejects(`${name}: asRoot is refused while the panel switch is off`,
+        () => tools[name].execute({ ...args, asRoot: true }, {}), /管理员模式/)
+      await rejects(`${name}: a non-boolean asRoot is refused`,
+        () => tools[name].execute({ ...args, asRoot: 'yes' }, {}), /must be a boolean/)
+    }
+    eq('a refused root write left no file behind',
+      (await tools.wsl.execute({
+        command: `test -e ${fsRoot}/root-off.txt && echo yes || echo no`, description: 'check the refusal',
+      })).stdout.trim(),
+      'no')
+
+    const rootTools = makeCtx(shim, { jobs, settings: { allowRoot: true } })
+    // The temporary a write creates belongs to the process that made it, so a root
+    // edit would hand a user's file to root. The owner is copied across with the mode.
+    const ownedPath = `${fsRoot}/owned.txt`
+    await tools['wsl-write'].execute({ path: ownedPath, content: 'alpha\nbeta\n' }, {})
+    const ownerBefore = (await tools.wsl.execute({
+      command: `stat -c '%U %a' ${ownedPath}`, description: 'owner before the edit',
+    })).stdout.trim()
+    const rootEdited = await rootTools['wsl-edit'].execute({
+      path: ownedPath, oldString: 'beta', newString: 'gamma', asRoot: true,
+    }, {})
+    eq('a root edit reports that it ran as root', rootEdited.asRoot, true)
+    eq('a root edit leaves the owner and mode alone',
+      (await tools.wsl.execute({ command: `stat -c '%U %a' ${ownedPath}`, description: 'owner after the edit' })).stdout.trim(),
+      ownerBefore)
+    eq('and the change itself landed',
+      (await tools['wsl-read'].execute({ path: ownedPath }, {})).content, 'alpha\ngamma\n')
+    check('the model-facing text says the call was privileged',
+      tools['wsl-edit'].output.render({}, rootEdited)[0].text.includes(', as root'),
+      tools['wsl-edit'].output.render({}, rootEdited)[0].text)
+
+    // The case the switch exists for: a file the user cannot open at all. It has to be
+    // refused with the reason rather than returned as an empty file — the header line
+    // carries the byte count and is printed before the read, so without the guard
+    // "unreadable" and "empty" would look the same.
+    const lockedPath = `${fsRoot}/locked.txt`
+    await rootTools.wsl.execute({
+      command: `printf 'secret\\n' > ${lockedPath} && chmod 600 ${lockedPath} && chown root:root ${lockedPath}`,
+      description: 'create a root-only file',
+      asRoot: true,
+    })
+    await rejects('an unreadable file is refused with the reason, not as an empty file',
+      () => tools['wsl-read'].execute({ path: lockedPath }, {}), /permission denied/)
+    eq('the same read as root returns the contents',
+      (await rootTools['wsl-read'].execute({ path: lockedPath, asRoot: true }, {})).content, 'secret\n')
+    await rejects('an edit of an unreadable file says it could not read it',
+      () => tools['wsl-edit'].execute({ path: lockedPath, oldString: 'secret', newString: 'x' }, {}),
+      /permission denied/)
   } finally {
     await tools.wsl.execute({
       command: `rm -rf ${fsRoot} ~/dsh-fs-smoke`, description: 'remove the file-tool scratch space', allowDangerous: true,
@@ -4061,6 +4145,11 @@ async function toolTests(tools, shim) {
   // the one thing a caller cannot discover from the result — that the pattern must be valid
   // in BOTH `rg` and `grep -E`. Measured 11147 / 12202; the ceilings below are that rounded
   // up, which is the whole ratchet: 300 chars of headroom, not a target.
+  // The three file tools then grew an `asRoot` switch, which is the one way to reach a file
+  // the user cannot open: 11147 -> 11647 and 12202 -> 12702, so the ceilings move with them.
+  // A switch is a parameter and a parameter is billed on every request whether it is used
+  // or not, which is why the descriptions say what the switch is FOR in one clause instead
+  // of listing everything root can do.
   console.log('\nmodel-facing catalog budget')
   let catalog = 0
   for (const [name, tool] of Object.entries(tools)) {
@@ -4068,7 +4157,7 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 11_200, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  check('total catalog cost within budget', catalog <= 11_900, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
   // The installer is absent from the default mount, so its cost is measured on a mount that
   // switches it on: a tool that does not exist costs nothing, but an enabled one has to fit
   // the same ceiling as the others.
@@ -4078,7 +4167,7 @@ async function toolTests(tools, shim) {
     optInCatalog += cost
     check(`${name}: catalog cost within budget with every switch on`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost with every tool switched on within budget', optInCatalog <= 12_300, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
+  check('total catalog cost with every tool switched on within budget', optInCatalog <= 13_000, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
   // The installer's own description is the only place the model learns that a
   // second call with `dryRun: false` is what installs, so that phrase is load-bearing.
   check('the installer says a second call is what installs',

@@ -245,6 +245,9 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
   卡片被换成真正落盘的 hunk，上下各带三行上下文——与平台自带 `edit` 同一张卡片、同样的宽度。
   `wsl-write` 没有可比的旧内容，所以它的卡片全是新增行，这也正是平台自带 `write` 画的样子。
   历史里重放时用结果中存下的 hunk 重绘，不需要再读文件。模型读到的仍然是那一行摘要，不是 diff。
+- **`asRoot` 是打开"你没有权限的文件"的那扇门。** 用户读不了的文件会被明确拒绝为 `permission
+  denied`，而不是当成空文件返回；同一个调用加上 `asRoot: true`（并且面板里打开「管理员模式」）就以
+  root 执行，把它读出来。以 root 编辑时会复制原文件的属主，所以改别人的文件不会把它悄悄变成 root 的。
 
 ### `wsl-grep`
 
@@ -286,6 +289,14 @@ wsl({ command: 'apt-get install -y jq', description: 'install jq', asRoot: true 
 授权来自开关而不是参数：开关关着时，`asRoot: true` 会被**明确拒绝并告知该打开哪个开关**，而不是悄悄降级成
 你的普通用户。每次以 root 执行的结果都会标注（`[ran as root: wsl -u root]`）；危险命令守卫照旧叠加生效：
 `rm -rf` 无论是否以 root 执行都仍需 `allowDangerous: true`。
+
+四个文件工具接受同一个参数、遵守同一项开关——`wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep` 都支持
+`asRoot`——所以"用户打不开的文件或目录"只差一个参数，不必再绕去写一条 `wsl` 命令：
+
+```
+wsl-read({ path: '/etc/ssl/private/site.key', asRoot: true })
+wsl-grep({ pattern: 'PasswordAuthentication', path: '/etc/ssh', asRoot: true })
+```
 
 ## 安装
 
@@ -365,7 +376,7 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | WSL 终端启动路径 | 可选的侧边栏终端从哪个目录启动 —— 写进你 **profile patch** 里 `terminal-controller` 那一行的 `--cd <目录>`（见[可选：在侧边栏开一个 WSL 终端](#可选在侧边栏开一个-wsl-终端)）。留空则删掉该参数；当前值也是从这个文件读的 |
 | 终端历史行数 | 那个终端保留多少行输出（同一行上的 `scrollback`）。平台默认 1000；填 `0` 不保留，留空回到默认。这两项都在重启 DSH 后生效 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
-| 管理员模式（root） | `wsl` 是否接受 `asRoot: true`（`wsl -u root`）。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
+| 管理员模式（root） | `wsl` 与四个文件工具是否接受 `asRoot: true`（`wsl -u root`）。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
 或用环境变量设。优先级由 `lib/config.js` 定：**插件配置 > 环境变量 > 内置默认值**；开关停在默认值时

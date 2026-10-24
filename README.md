@@ -281,7 +281,7 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
                                                                → exactly one match, or it refuses
 ```
 
-Five things worth knowing:
+Six things worth knowing:
 
 - **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
   with a message instead of being returned as mojibake. The workaround is the `wsl` tool
@@ -303,6 +303,11 @@ Five things worth knowing:
   additions, which is exactly what the platform's own `write` draws. A replayed edit redraws
   from the hunks stored with the result, so it does not need the file. The model still reads
   the one-line summary, not the diff.
+- **`asRoot` is how a file you cannot open gets opened.** A file the user has no read
+  permission for is refused with `permission denied`, not reported as an empty file; the same
+  call with `asRoot: true` — and 管理员模式 on in the panel — runs as root and reads it. An edit
+  as root copies the old owner onto the new file, so editing someone else's file does not
+  silently hand it to root.
 
 ### `wsl-grep`
 
@@ -351,6 +356,15 @@ The switch is the authorisation, not the parameter: with it off, `asRoot: true` 
 account. Every privileged result is marked (`[ran as root: wsl -u root]`), and the
 destructive-command guard still applies on top: `rm -rf` needs `allowDangerous: true`
 whether or not the call runs as root.
+
+The four file tools take the same parameter and honour the same switch — `asRoot` on
+`wsl-read`, `wsl-write`, `wsl-edit` and `wsl-grep` — so a file or a directory the user
+cannot open is one argument away instead of one `wsl` call away:
+
+```
+wsl-read({ path: '/etc/ssl/private/site.key', asRoot: true })
+wsl-grep({ pattern: 'PasswordAuthentication', path: '/etc/ssh', asRoot: true })
+```
 
 ## Install
 
@@ -447,7 +461,7 @@ explanation.
 | WSL 终端启动路径 | the optional sidebar terminal's startup directory — `--cd <dir>` on the `terminal-controller` row of your **profile patch** (see [Optional: a WSL terminal in the sidebar](#optional-a-wsl-terminal-in-the-sidebar)). Empty clears it, and the panel reads the current value from the same file |
 | 终端历史行数 | how many lines of output that terminal keeps (`scrollback` on the same row). The platform default is 1000; `0` keeps none and an empty box restores the default. Both fields take effect at the next DSH start |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
-| 管理员模式（root） | whether `wsl` accepts `asRoot: true` (`wsl -u root`). WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
+| 管理员模式（root） | whether `wsl` and the four file tools accept `asRoot: true` (`wsl -u root`). WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
 
 The panel edits the plugin's own configuration, so the same values can be written
 by hand (`- id: tool-wsl` with `config:` in a profile patch) or by environment
