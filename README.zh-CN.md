@@ -231,6 +231,10 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
   报告的大小是否一致——文件在读取途中被改动就是这样被发现的——确认无误后才写回。
 - **这是便利，不是沙箱。** `wsl` 本来就能写你有权限写的任何文件，所以这三个工具没有增加新的能力；
   它们增加的是"模型不必自己拼 shell 命令"，以及"结果是有结构的，而不是靠解析屏幕"。
+- **界面上，编辑和写入都是以 diff 呈现的。** `wsl-edit` 执行时，卡片先显示你要求的替换；结束时
+  卡片被换成真正落盘的 hunk，上下各带三行上下文——与平台自带 `edit` 同一张卡片、同样的宽度。
+  `wsl-write` 没有可比的旧内容，所以它的卡片全是新增行，这也正是平台自带 `write` 画的样子。
+  历史里重放时用结果中存下的 hunk 重绘，不需要再读文件。模型读到的仍然是那一行摘要，不是 diff。
 
 ### `wsl-grep`
 
@@ -607,7 +611,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 924 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 170 项客户端检查
+npm test          # 995 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 170 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

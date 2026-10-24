@@ -25,6 +25,7 @@ import { resolveConfig } from '../lib/config.js'
 import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
 import { grepScript, parseGrepZ, parseRgJson, previewLine } from '../lib/fs-ops.js'
+import { computeHunks, HUNK_CONTEXT } from '../lib/hunks.js'
 import { destructiveReason } from '../lib/guard.js'
 import { cleanStderr, formatResult, normalizeExitCode, streamFacts } from '../lib/result.js'
 import { assertLauncherReachable, collectForwardEnv, resolveDistro, sessionCwdOf } from '../lib/runner.js'
@@ -1364,6 +1365,50 @@ async function unitTests() {
   check('the install timeout is generous but finite', BOOTSTRAP_TIMEOUT_MS === 10 * 60 * 1000, String(BOOTSTRAP_TIMEOUT_MS))
 }
 
+// --- wsl-edit: the hunks behind the diff card ------------------------------
+
+async function hunkUnitTests() {
+  console.log('\nwsl-edit: hunk computation')
+
+  const ten = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join('\n') + '\n'
+  const one = computeHunks('p', ten, [ten.indexOf('line 5')], 'line 5', 'LINE FIVE')
+  eq('one replacement is one hunk', one.length, 1)
+  eq('the hunk keeps three lines of context each side', one[0].oldText.split('\n').filter(Boolean).length, 7)
+  check('the hunk carries the change',
+    one[0].newText.includes('LINE FIVE') && !one[0].newText.includes('line 5'), one[0].newText)
+  eq('the hunk labels the file', one[0].path, 'p')
+  eq('the context width is the platform\'s', HUNK_CONTEXT, 3)
+
+  // Two replacements whose context overlaps are one card, not two overlapping ones.
+  const near = computeHunks('p', ten, [ten.indexOf('line 4'), ten.indexOf('line 6')], 'line', 'LINE')
+  eq('two nearby replacements merge into one hunk', near.length, 1)
+  eq('a merged hunk applies both', (near[0].newText.match(/LINE/g) ?? []).length, 2)
+
+  const twenty = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n') + '\n'
+  const far = computeHunks('p', twenty, [twenty.indexOf('line 2'), twenty.indexOf('line 18')], 'line', 'LINE')
+  eq('two distant replacements stay separate', far.length, 2)
+
+  // A replacement that spans lines still yields line-aligned hunks.
+  const multiline = computeHunks('p', ten, [ten.indexOf('line 3\nline 4')], 'line 3\nline 4', 'merged')
+  check('a multi-line replacement starts and ends on line boundaries',
+    multiline[0].oldText.startsWith('line 1\n') && multiline[0].oldText.endsWith('line 7\n'), multiline[0].oldText)
+  check('and its new text is the same window with the change',
+    multiline[0].newText.startsWith('line 1\n') && multiline[0].newText.includes('merged'), multiline[0].newText)
+
+  // A replacement that changes the byte length shifts every later line in the window.
+  const grow = computeHunks('p', ten, [ten.indexOf('line 5')], 'line 5', 'line FIVE!')
+  check('a longer replacement keeps the tail of the hunk', grow[0].newText.endsWith('line 7\nline 8\n'), grow[0].newText)
+  const shrink = computeHunks('p', ten, [ten.indexOf('line 5')], 'line 5', '5')
+  check('a shorter replacement keeps the tail of the hunk', shrink[0].newText.endsWith('line 7\nline 8\n'), shrink[0].newText)
+
+  eq('no offsets means no hunks', computeHunks('p', ten, [], 'x', 'y').length, 0)
+
+  const head = computeHunks('p', ten, [0], 'line 1', 'LINE 1')
+  check('a hunk at the top of the file is clamped, not padded', head[0].oldText.startsWith('line 1\n'), head[0].oldText)
+  const tail = computeHunks('p', ten, [ten.indexOf('line 10')], 'line 10', 'LINE 10')
+  check('a hunk at the bottom of the file is clamped too', tail[0].oldText.endsWith('line 10\n'), tail[0].oldText)
+}
+
 // --- wsl-term: the text work behind the terminal tool ----------------------
 
 async function terminalUnitTests() {
@@ -2063,11 +2108,14 @@ async function toolTests(tools, shim) {
   console.log('\nwsl: presentCall cards use the platform vocabulary')
   const GENERIC_FIELDS = ['card', 'title', 'kind', 'rawInput', 'content', 'locations']
   const TERMINAL_FIELDS = ['card', 'title', 'description', 'cwd']
+  const DIFF_FIELDS = ['card', 'title', 'diffs', 'locations']
   for (const [name, tool] of Object.entries(tools)) {
     const view = tool.presentCall({ command: 'echo hi', description: 'label', path: '/tmp', workdir: 'C:\\tmp' })
     check(`${name}: declares a card the UI knows`, ['generic', 'terminal', 'diff'].includes(view?.card), String(view?.card))
     check(`${name}: the card carries a title`, typeof view?.title === 'string' && view.title.length > 0, JSON.stringify(view?.title))
-    const allowed = view?.card === 'terminal' ? TERMINAL_FIELDS : GENERIC_FIELDS
+    const allowed = view?.card === 'terminal'
+      ? TERMINAL_FIELDS
+      : view?.card === 'diff' ? DIFF_FIELDS : GENERIC_FIELDS
     const extra = Object.keys(view ?? {}).filter((key) => !allowed.includes(key))
     check(`${name}: no field outside the ${view?.card} card`, extra.length === 0, extra.join(', '))
   }
@@ -3405,6 +3453,49 @@ async function toolTests(tools, shim) {
     }, {})
     eq('replaceAll counts every match it made', every.replacements, 3)
 
+    // The UI side of an edit: a pending card built from the arguments, then the applied
+    // hunks. Neither reaches the model — the text above is what it reads — so the assertions
+    // here are about what a reader sees, and about a card surviving a replay without the file.
+    const editCall = tools['wsl-edit'].presentCall({ path: samplePath, oldString: 'second', newString: 'SECOND' })
+    eq('an edit call presents a diff card', editCall.card, 'diff')
+    eq('the pending card shows the literal replacement', editCall.diffs[0].oldText, 'second')
+    eq('and the text it becomes', editCall.diffs[0].newText, 'SECOND')
+    eq('the pending card follows the file', editCall.locations[0].path, samplePath)
+    check('an edit result carries hunks for the card', Array.isArray(edited.diffs) && edited.diffs.length === 1,
+      JSON.stringify(edited.diffs))
+    check('a hunk is a window of the file it changed',
+      edited.diffs[0].oldText.includes('second "quoted" line') && edited.diffs[0].newText.includes('SECOND line'),
+      JSON.stringify(edited.diffs[0]))
+    eq('the hunks come through the presentation metadata',
+      JSON.stringify(tools['wsl-edit'].output.presentationMeta({}, edited)), JSON.stringify({ path: edited.path, diffs: edited.diffs }))
+    const editShown = tools['wsl-edit'].presentResult({ path: samplePath }, {
+      content: [], isError: false, meta: tools['wsl-edit'].output.presentationMeta({}, edited),
+    })
+    eq('a completed edit presents the applied diff', editShown.card, 'diff')
+    check('the completed card draws the change', editShown.diffs[0].newText.includes('SECOND line'), JSON.stringify(editShown.diffs))
+    eq('a failed edit presents nothing, so the UI falls back',
+      tools['wsl-edit'].presentResult({ path: samplePath }, { content: [], isError: true }), undefined)
+    eq('a replayed result without metadata presents nothing',
+      tools['wsl-edit'].presentResult({ path: samplePath }, { content: [], isError: false }), undefined)
+    eq('the model-facing text of an edit is unchanged by the card',
+      tools['wsl-edit'].output.render({}, edited)[0].text.includes('1 replacement'), true)
+
+    // A write draws the card the platform's own `write` draws: no before-image, so every
+    // line is an addition. The content comes from the arguments -- which a replay still
+    // has -- so unlike an edit there is no metadata to carry.
+    const writeArgs = { path: samplePath, content: 'one\ntwo\nthree\n' }
+    const writeCall = tools['wsl-write'].presentCall(writeArgs)
+    eq('a write call presents a diff card', writeCall.card, 'diff')
+    eq('a write has no old side, so the diff is all additions', writeCall.diffs[0].oldText, null)
+    eq('the write card carries the content that was written', writeCall.diffs[0].newText, writeArgs.content)
+    eq('the write card follows the file', writeCall.locations[0].path, samplePath)
+    eq('a completed write presents the content it wrote',
+      tools['wsl-write'].presentResult(writeArgs, { content: [], isError: false }).diffs[0].newText, writeArgs.content)
+    eq('a failed write presents nothing, so the UI falls back',
+      tools['wsl-write'].presentResult(writeArgs, { content: [], isError: true }), undefined)
+    eq('a replayed write with no content draws an empty addition',
+      tools['wsl-write'].presentResult({ path: samplePath }, { content: [], isError: false }).diffs[0].newText, '')
+
     // `~` and a nested directory that does not exist yet: the first is what a model
     // writes when it means the home, the second is what it writes when it means "put it
     // there", and both have to work without a shell call to prepare them.
@@ -3733,6 +3824,7 @@ try {
   check('the default mount registers the file tools, the read-only tools and the terminal tool, not the installer',
     Object.keys(tools).sort().join(',') === 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(tools).join(','))
   await unitTests()
+  await hunkUnitTests()
   await terminalUnitTests()
   await toolTests(tools, shim)
 } finally {
