@@ -281,7 +281,7 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
                                                                → exactly one match, or it refuses
 ```
 
-Four things worth knowing:
+Five things worth knowing:
 
 - **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
   with a message instead of being returned as mojibake. The workaround is the `wsl` tool
@@ -296,6 +296,13 @@ Four things worth knowing:
 - **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
   these add no new power; what they add is that the model does not have to compose a shell
   command, and that the result is structured instead of screen-scraped.
+- **The UI shows an edit and a write as diffs.** While `wsl-edit` runs, its card shows the
+  replacement you asked for; when it finishes the card is replaced by the hunks that were
+  actually applied, three lines of context wide — the same card, and the same width, as the
+  platform's own `edit`. `wsl-write` has no before-image to diff against, so its card is all
+  additions, which is exactly what the platform's own `write` draws. A replayed edit redraws
+  from the hunks stored with the result, so it does not need the file. The model still reads
+  the one-line summary, not the diff.
 
 ### `wsl-grep`
 
