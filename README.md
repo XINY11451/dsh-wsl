@@ -359,7 +359,9 @@ files — narrow `path` instead. Results are capped at 250 matches with 2000 byt
 line; a capped result says how many were seen, and `wsl-read` on a matched file gives the
 surrounding context. A result bigger than the 1 MiB body window is cut and reported as capped
 rather than failing, and a tree where some files could not be read says the result is partial
-instead of presenting what it found as complete.
+instead of presenting what it found as complete. A single matching LINE longer than that window
+is refused by name (one minified line can be a megabyte), because answering "no matches" there
+would hide a real match — search that file with `wsl` (`grep -o`, `rg -o`) instead.
 
 The engine is whichever the distribution has: `rg` when it is installed (it honours
 `.gitignore`, skips binaries, and reports JSON), and GNU `grep -E` otherwise, which is what
@@ -373,7 +375,9 @@ write a pattern:
   as a search failure rather than as "no matches".
 - **Ignore rules.** `rg` skips what `.gitignore` excludes and `grep` does not, so the same
   search can return different sets of files on two machines. Install `ripgrep`
-  (`wsl-bootstrap` will do it) when that difference matters.
+  (`wsl-bootstrap` will do it) when that difference matters — it is also what a distribution
+  whose `grep` is busybox needs, because busybox grep has neither `-Z` nor `--include`; the
+  tool probes for them and says so instead of failing with "invalid option".
 
 A path containing a colon is why the fallback asks `grep` for `-Z`: the file name and the line
 number are separated by a NUL byte, so `a:b.ts` stays one path instead of becoming `a` on line
@@ -821,7 +825,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1557 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
+npm test          # 1566 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

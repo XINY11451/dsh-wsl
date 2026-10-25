@@ -3831,6 +3831,19 @@ async function toolTests(tools, shim) {
     check('and falls back to grep -E with a NUL-separated name', script.includes('grep -r -n -I -H -Z -E'))
     check('the include reaches both engines', script.includes("--glob='*.ts'") && script.includes("--include='*.ts'"))
     check('a pattern with a space stays one word', script.includes("--regexp='a b'") && script.includes("-e 'a b'"))
+    // A pattern is never a path: quotePath leaves a leading `~user` unquoted for
+    // tilde expansion, which would turn the pattern into /root/... and quietly
+    // search the wrong text (the rg branch would not, so the engines would differ).
+    const tildePattern = grepScript({ path: '.', pattern: '~root/x' })
+    check('a pattern starting with ~ is quoted literally',
+      tildePattern.includes("--regexp='~root/x'") && tildePattern.includes("-e '~root/x'")
+      && !tildePattern.includes("~root/'x'"), tildePattern.slice(0, 600))
+    // busybox grep has neither -Z nor --include: probing first turns a broken
+    // invocation into an instruction instead of "invalid option" from grep.
+    check('the fallback probes for grep -Z before using it', script.includes('no GNU grep'))
+    const withoutInclude = grepScript({ path: '.', pattern: 'x' })
+    check('and probes for --include only when one was given',
+      script.includes('no --include') && !withoutInclude.includes('no --include'), withoutInclude.slice(-400))
     check('the target is quoted once and used from a variable', script.includes("p=~/'src'") && script.includes('"$p"'))
     const bare = grepScript({ path: '.', pattern: 'x' })
     check('without an include neither engine gets a filter',
@@ -3869,8 +3882,15 @@ async function toolTests(tools, shim) {
     check('a plain write copies the mode only', plain.includes('chmod --reference=') && !plain.includes('chown'))
     check('the mode is copied without assuming GNU chmod',
       plain.includes('stat -c %a') && plain.includes('chmod "$m"'), plain)
-    check('an unresolvable symlink is refused instead of replacing the link',
-      plain.includes('if [ -L "$p" ]') && plain.includes('readlink -f -- "$p"'))
+    // busybox's `readlink -f` answers the LINK ITSELF for a dangling target, which
+    // would have replaced the link (the very thing this block prevents), so the
+    // chain is walked with plain `readlink` one hop at a time.
+    check('a symlink chain is walked with plain readlink, not readlink -f',
+      plain.includes('while [ -L "$p" ]') && plain.includes('readlink -- "$p"')
+      && !plain.includes('readlink -f --'), plain.slice(0, 900))
+    check('and an unresolvable chain is refused instead of replacing the link',
+      plain.includes('the symlink target could not be resolved')
+      && plain.includes('the symlink chain is too long or loops'))
     // A FIFO/socket/device node is not a file to replace: `mv` over it would turn it
     // into a regular file (a live socket stops working, /dev/null becomes text).
     check('only a regular file is replaced',
@@ -4261,12 +4281,41 @@ async function toolTests(tools, shim) {
       })).stdout.trim(),
       'yes')
 
+    // A dangling symlink: the write must create the TARGET and keep the link a link
+    // (busybox's `readlink -f` answers the link itself here, which is why the script
+    // walks the chain with plain readlink).
+    await tools.wsl.execute({
+      command: `ln -s ${fsRoot}/dangling-target.txt ${fsRoot}/dangling-link.txt`, description: 'a dangling symlink',
+    })
+    await tools['wsl-write'].execute({ path: `${fsRoot}/dangling-link.txt`, content: 'through a dangling link\n' }, {})
+    eq('a write through a dangling symlink creates its target',
+      readText(await tools['wsl-read'].execute({ path: `${fsRoot}/dangling-target.txt` }, {})), 'through a dangling link')
+    eq('and the link is still a link',
+      (await tools.wsl.execute({
+        command: `test -L ${fsRoot}/dangling-link.txt && echo yes || echo no`, description: 'still a link',
+      })).stdout.trim(),
+      'yes')
+
+    // A pattern is literal text: `~root/x` must not be tilde-expanded into /root/x.
+    await tools['wsl-write'].execute({ path: `${fsRoot}/tilde.txt`, content: '~root/x\n/root/x\n' }, {})
+    const tildeHit = await tools['wsl-grep'].execute({ pattern: '~root/x', path: `${fsRoot}/tilde.txt` }, {})
+    eq('a pattern starting with ~ is not expanded by the shell', tildeHit.total, 1)
+    eq('and it matches the literal text', tildeHit.matches[0]?.line, '~root/x')
+
     // A single line longer than the read window cannot be paged by line. Dropping the
     // partial line used to answer "Showing lines 1-0 … Use offset=1", which invites a
     // retry loop; naming the limit is the fix.
     await tools['wsl-write'].execute({ path: `${fsRoot}/one-long-line.json`, content: 'x'.repeat(1_200_000) }, {})
     await rejects('a line longer than the read window is refused with a way forward',
       () => tools['wsl-read'].execute({ path: `${fsRoot}/one-long-line.json` }, {}), /longer than the .*read window/)
+
+    // The search side of the same file: the first matching record is longer than the
+    // result window, so after capping there is no complete match. Saying "No matches
+    // found" there would hide a real match, so it is refused by name.
+    await tools['wsl-write'].execute({ path: `${fsRoot}/one-long-match.txt`, content: `needle${'x'.repeat(1_200_000)}\n` }, {})
+    await rejects('a match longer than the search window is refused, not reported as no match',
+      () => tools['wsl-grep'].execute({ pattern: 'needle', path: `${fsRoot}/one-long-match.txt` }, {}),
+      /first match is longer than/)
 
     // The panel switch is the authorisation for root in the file tools too, and a
     // refusal must never be a silent downgrade to the user account: a caller that
