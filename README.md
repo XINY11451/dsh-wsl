@@ -691,7 +691,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1284 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
+npm test          # 1298 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

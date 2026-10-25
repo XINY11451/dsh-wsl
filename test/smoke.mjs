@@ -5082,6 +5082,10 @@ async function channelUnitTests() {
   // One-shot script for the next `prompt` call, so a test can emit exactly the events its
   // scenario is about (multi-step usage, a stream-only usage, ...). Null = the default answer.
   let promptScript = null
+  /** Refuse the next `prompt` admission once (see the cancel-settle checks). */
+  let rejectNextPrompt = null
+  /** Hold the next `prompt` admission until the test settles it (see the abort check). */
+  let deferNextPrompt = null
   const sessions = new Map([
     ['session-a', { id: 'session-a', cwd: 'D:\\work', createdAt: 3 }],
     ['wsl', { id: 'wsl', cwd: 'D:\\work', createdAt: 2 }],
@@ -5097,6 +5101,21 @@ async function channelUnitTests() {
     sessionController: {
       async prompt(request, signal) {
         calls.push(['prompt', request, signal])
+        // Scenario seams for the cancel-settle checks: refuse the next admission once (the
+        // cancelled turn is still finishing), or hold it until the test settles it by hand.
+        if (rejectNextPrompt !== null) {
+          const error = rejectNextPrompt
+          rejectNextPrompt = null
+          throw error
+        }
+        if (deferNextPrompt !== null) {
+          const deferred = deferNextPrompt
+          deferNextPrompt = null
+          return new Promise((resolve, reject) => {
+            deferred.resolve = resolve
+            deferred.reject = reject
+          })
+        }
         const id = request.sessionId
         if (typeof promptScript === 'function') {
           promptScript(emit, id)
@@ -5158,6 +5177,9 @@ async function channelUnitTests() {
         // The terminal-history scenarios target this conversation; it must have a live agent
         // (the bridge needs one to attach), while `session-a` stays archiveable below.
         if (id === 'history-session') return { id }
+        // The cancel-settle scenarios need an agent that KEEPS reporting `running` while the
+        // just-cancelled turn tears down — that is the state that used to swallow the prompt.
+        if (id === 'session-cancel') return { id, status: 'running' }
         return undefined
       },
     },
@@ -5961,6 +5983,149 @@ async function channelUnitTests() {
         } finally {
           await cleanupShim(box, off)
         }
+      }
+    }
+
+    // Ctrl+C then an immediate prompt: cancelling a turn is asynchronous, so the agent still
+    // reports `running` while that turn tears down. Steering into it silently swallowed the new
+    // prompt (the terminal showed `完成 0 步 in 0/out 0（aborted）`). The channel therefore queues
+    // within a short window after a terminal cancel, and retries one rejected admission.
+    {
+      let fakeNow = 1_000_000
+      const cancelHome = mkdtempSync(join(tmpdir(), 'dsh-wsl-cancel-'))
+      const cancelChannel = createChannel({
+        ctx, config, wsl, env: { USERPROFILE: cancelHome }, now: () => fakeNow,
+      })
+      const { port: cancelPort } = await cancelChannel.start()
+      const promptCalls = () => calls.filter((entry) => entry[0] === 'prompt')
+      const waitFor = async (predicate, ms = 2_000) => {
+        const deadline = Date.now() + ms
+        while (Date.now() < deadline) {
+          if (predicate()) return true
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        return predicate()
+      }
+      /** Start a /say and destroy its response once acknowledged: exactly a terminal Ctrl+C. */
+      const cutSay = (target, text) => new Promise((resolve, reject) => {
+        let destroyed = false
+        const guard = setTimeout(() => reject(new Error('the /say stream never acknowledged')), 2_000)
+        const request = httpRequest({
+          host: '127.0.0.1', port: cancelPort, method: 'POST', path: '/say',
+          headers: {
+            'content-type': 'text/plain',
+            'x-dsh-wsl-token': cancelChannel.token,
+            'x-dsh-wsl-session': target,
+          },
+        }, (response) => {
+          let buffer = ''
+          response.setEncoding('utf8')
+          response.on('data', (chunk) => {
+            buffer += chunk
+            if (destroyed || !buffer.includes('~ack')) return
+            destroyed = true
+            clearTimeout(guard)
+            response.destroy()
+            resolve()
+          })
+          response.on('error', () => {})
+        })
+        request.on('error', () => {})
+        request.write(text)
+        request.end()
+      })
+      const sayOnCancel = (target, text) => new Promise((resolve, reject) => {
+        const request = httpRequest({
+          host: '127.0.0.1', port: cancelPort, method: 'POST', path: '/say',
+          headers: {
+            'content-type': 'text/plain',
+            'x-dsh-wsl-token': cancelChannel.token,
+            'x-dsh-wsl-session': target,
+          },
+        }, (response) => {
+          const chunks = []
+          response.on('data', (chunk) => chunks.push(chunk))
+          response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }))
+        })
+        request.on('error', reject)
+        request.write(text)
+        request.end()
+      })
+      try {
+        const cancelledBefore = cancelCalls.length
+        await cutSay('session-cancel', 'first turn')
+        check('the Ctrl+C really asked the host to cancel',
+          await waitFor(() => cancelCalls.length > cancelledBefore),
+          JSON.stringify(cancelCalls.slice(cancelledBefore)))
+        // Let the cut stream finish its own bookkeeping (prompt admission, cleanup) so the next
+        // request is not answered 409 by a stream that is still on its way out.
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        eq('and the fake agent still reports the cancelled turn running',
+          services.agents.get('session-cancel').status, 'running')
+        const beforeQueued = promptCalls().length
+        const queued = await sayOnCancel('session-cancel', 'right after ctrl-c')
+        const queuedCalls = promptCalls().slice(beforeQueued)
+        eq('the queued prompt was admitted once', queuedCalls.length, 1)
+        eq('a prompt right after Ctrl+C is queued, not steered',
+          queuedCalls[0]?.[1]?.mode, 'queue')
+        eq('and that turn streams normally', queued.status, 200)
+
+        // A rejected admission inside the window is retried once, as a queue turn.
+        rejectNextPrompt = new Error('the cancelled turn is still finishing')
+        const beforeRetry = promptCalls().length
+        const retried = await sayOnCancel('session-cancel', 'retry me')
+        const retryCalls = promptCalls().slice(beforeRetry)
+        eq('a rejected admission inside the window is admitted again', retryCalls.length, 2)
+        eq('the retry uses queue mode', retryCalls[1]?.[1]?.mode, 'queue')
+        check('and it is a new request',
+          retryCalls[0]?.[1]?.requestId !== retryCalls[1]?.[1]?.requestId,
+          `${String(retryCalls[0]?.[1]?.requestId)} vs ${String(retryCalls[1]?.[1]?.requestId)}`)
+        check('and the terminal marker survives the retry',
+          String(retryCalls[1]?.[1]?.content?.[0]?.text ?? '').startsWith(SAY_PREFIX),
+          String(retryCalls[1]?.[1]?.content?.[0]?.text))
+        check('the retried turn streams', String(retried.body).includes('~e 1'), String(retried.body).slice(-80))
+
+        // If the caller is already gone (aborted), a rejected admission is NOT retried.
+        deferNextPrompt = {}
+        const deferred = deferNextPrompt
+        const beforeAbort = promptCalls().length
+        const abortedRequest = httpRequest({
+          host: '127.0.0.1', port: cancelPort, method: 'POST', path: '/say',
+          headers: {
+            'content-type': 'text/plain',
+            'x-dsh-wsl-token': cancelChannel.token,
+            'x-dsh-wsl-session': 'session-cancel',
+          },
+        }, (response) => {
+          response.setEncoding('utf8')
+          response.on('data', () => {})
+          response.on('error', () => {})
+        })
+        abortedRequest.on('error', () => {})
+        abortedRequest.write('abort me')
+        abortedRequest.end()
+        check('the admission really started', await waitFor(() => promptCalls().length > beforeAbort))
+        abortedRequest.destroy()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        deferred.reject(new Error('admission aborted'))
+        await new Promise((resolve) => setTimeout(resolve, 700))
+        eq('an aborted request does not retry the admission', promptCalls().length - beforeAbort, 1)
+
+        // The window is PER SESSION: another conversation still steers while it is running.
+        await sayOnCancel('session-busy', 'other conversation')
+        eq('the cancel window does not demote another conversation to queue',
+          promptCalls().at(-1)?.[1]?.mode, 'steer')
+
+        // And after the window the cancelled conversation steers again.
+        fakeNow += 4_000
+        await sayOnCancel('session-cancel', 'later prompt')
+        eq('after the settle window a running conversation steers again',
+          promptCalls().at(-1)?.[1]?.mode, 'steer')
+      } finally {
+        rejectNextPrompt = null
+        deferNextPrompt = null
+        await cancelChannel.stop()
+        try { rmSync(cancelHome, { recursive: true, force: true }) } catch {}
       }
     }
 
