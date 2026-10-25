@@ -626,8 +626,17 @@ cmd_say() {
           ;;
       esac
       # A buffer left by a compose line is the answer: once the reader released the pause,
-      # the next frame flushes it before printing more.
-      if [ -n "$pause_text" ] && ! paused; then flush_paused_output; fi
+      # the next frame flushes it before printing more. The compose also hid the turn's clock
+      # (the thinking line is deliberately not repainted over a line a person is typing), so
+      # the clock is shown again here instead of leaving the last frozen number above: by this
+      # point the turn has entered the text phase and the next step updates it at once.
+      if [ -n "$pause_text" ] && ! paused; then
+        flush_paused_output
+        if [ "$reason" = 2 ]; then
+          last_status_us=0
+          maybe_step_status
+        fi
+      fi
       got_frame=1
       case "$line" in
         '~ack') start_ack_ticker; prefetch_balance ;;
