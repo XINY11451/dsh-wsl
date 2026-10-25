@@ -25,7 +25,7 @@ import { apply, buildConfig } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
 import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
-import { grepScript, parseGrepZ, parseRgJson, previewLine, readScript, writeScript } from '../lib/fs-ops.js'
+import { FS_EXIT, grepFallbackPattern, grepScript, parseGrepZ, parseRgJson, previewLine, readScript, writeScript } from '../lib/fs-ops.js'
 import { computeHunks, HUNK_CONTEXT } from '../lib/hunks.js'
 import { destructiveReason } from '../lib/guard.js'
 import { channelSessionOf, createChannel, firstUserLine, SAY_PREFIX, sessionRecordOf, titlesOf, validSessionId, walletText } from '../lib/channel.js'
@@ -2426,13 +2426,15 @@ async function toolTests(tools, shim) {
   const GENERIC_FIELDS = ['card', 'title', 'kind', 'rawInput', 'content', 'locations']
   const TERMINAL_FIELDS = ['card', 'title', 'description', 'cwd']
   const DIFF_FIELDS = ['card', 'title', 'diffs', 'locations']
+  const READ_FIELDS = ['card', 'path', 'offset', 'lines', 'totalLines', 'lang', 'content']
   for (const [name, tool] of Object.entries(tools)) {
     const view = tool.presentCall({ command: 'echo hi', description: 'label', path: '/tmp', workdir: 'C:\\tmp' })
-    check(`${name}: declares a card the UI knows`, ['generic', 'terminal', 'diff'].includes(view?.card), String(view?.card))
+    check(`${name}: declares a card the UI knows`, ['generic', 'terminal', 'diff', 'read'].includes(view?.card), String(view?.card))
     check(`${name}: the card carries a title`, typeof view?.title === 'string' && view.title.length > 0, JSON.stringify(view?.title))
     const allowed = view?.card === 'terminal'
       ? TERMINAL_FIELDS
-      : view?.card === 'diff' ? DIFF_FIELDS : GENERIC_FIELDS
+      : view?.card === 'diff' ? DIFF_FIELDS
+        : view?.card === 'read' ? READ_FIELDS : GENERIC_FIELDS
     const extra = Object.keys(view ?? {}).filter((key) => !allowed.includes(key))
     check(`${name}: no field outside the ${view?.card} card`, extra.length === 0, extra.join(', '))
   }
@@ -3852,11 +3854,43 @@ async function toolTests(tools, shim) {
 
     const plain = writeScript('/tmp/a')
     check('a plain write copies the mode only', plain.includes('chmod --reference=') && !plain.includes('chown'))
+    check('the mode is copied without assuming GNU chmod',
+      plain.includes('stat -c %a') && plain.includes('chmod "$m"'), plain)
+    check('an unresolvable symlink is refused instead of replacing the link',
+      plain.includes('if [ -L "$p" ]') && plain.includes('readlink -f -- "$p"'))
     const owned = writeScript('/tmp/a', { keepOwner: true })
     check('keepOwner copies the owner as well', owned.includes('chown --reference="$p" -- "$t"'), owned)
     check('keepOwner still copies the mode', owned.includes('chmod --reference="$p" -- "$t"'))
     check('a failed chown never fails the write',
-      owned.includes('chown --reference="$p" -- "$t" 2>/dev/null || :'), owned)
+      owned.includes('if chown --reference="$p" -- "$t" 2>/dev/null; then :;')
+      && owned.includes('chown "$o" -- "$t" 2>/dev/null || :'), owned)
+
+    // The scratch-file exit code has to BE a number: `exit ${FS_EXIT.INTERNAL}`
+    // with a missing entry makes bash print "numeric argument required" and leave
+    // with 2, which a caller would report as a search failure.
+    check('the search script always exits with a number',
+      !/\bexit undefined\b/.test(grepScript({ path: '.', pattern: 'x' }))
+      && Number.isInteger(FS_EXIT.INTERNAL) && FS_EXIT.INTERNAL > 0, String(FS_EXIT.INTERNAL))
+
+    // `\d` is the one rg escape GNU grep -E reads as a literal `d`: leaving it
+    // alone turns `\d+` into "matches dd" — an exit-0 answer that is silently
+    // wrong. The fallback translates it; `\w`, `\s` and `\b` mean the same in both
+    // engines and are left alone.
+    eq('grep fallback: \\d becomes a digit class', grepFallbackPattern('\\d+'), '[0-9]+')
+    eq('grep fallback: \\D becomes a negated digit class', grepFallbackPattern('\\D'), '[^0-9]')
+    eq('grep fallback: \\w, \\s and \\b are shared escapes and stay',
+      grepFallbackPattern('\\w+\\s\\b'), '\\w+\\s\\b')
+    eq('grep fallback: an escaped backslash is not a digit class',
+      grepFallbackPattern('\\\\d'), '\\\\d')
+    eq('grep fallback: inside a bracket expression the range is inlined',
+      grepFallbackPattern('[\\d.]'), '[0-9.]')
+    eq('grep fallback: a negated class keeps its caret',
+      grepFallbackPattern('[^\\d]'), '[^0-9]')
+    const digitScript = grepScript({ path: '.', pattern: 'id\\d+' })
+    check('the fallback command runs the translated pattern',
+      digitScript.includes("grep -r -n -I -H -Z -E -e 'id[0-9]+'"), digitScript.slice(0, 400))
+    check('while rg keeps the ripgrep syntax it understands',
+      digitScript.includes("--regexp='id\\d+'"), digitScript.slice(0, 400))
   }
 
   // The platform's own read/write/edit tools cannot reach a distribution: its home is a 9p
@@ -4121,6 +4155,38 @@ async function toolTests(tools, shim) {
     const partiallyReadable = await tools['wsl-grep'].execute({ pattern: 'needle', path: unreadableRoot }, {})
     eq('a file it cannot read does not throw away the matches it could', partiallyReadable.total, 1)
     await tools.wsl.execute({ description: 'Put the mode back', command: `chmod 644 ${unreadableRoot}/closed.txt` }, {})
+
+    // `\d` on the engine the distribution actually has: Ubuntu ships no `rg`, so this
+    // runs the GNU grep fallback, where `\d` is a literal `d` — before the translation
+    // it matched "ddd" and never a number, with exit 0.
+    await tools['wsl-write'].execute({ path: `${grepRoot}/numbers.txt`, content: 'id 42\nid abc\n' }, {})
+    const digits = await tools['wsl-grep'].execute({ pattern: 'id \\d+', path: `${grepRoot}/numbers.txt` }, {})
+    eq('a digit class matches the number under either engine', digits.total, 1)
+    eq('and the match is the numeric line', digits.matches[0]?.line, 'id 42')
+
+    // A write through a symlink must change the target, not replace the link:
+    // renaming over the link would leave the target untouched and silently turn the
+    // link into a regular file.
+    const linkTarget = `${fsRoot}/link-target.txt`
+    const linkPath = `${fsRoot}/link.txt`
+    await tools['wsl-write'].execute({ path: linkTarget, content: 'old content\n' }, {})
+    await tools.wsl.execute({ command: `ln -s ${linkTarget} ${linkPath}`, description: 'make a symlink' })
+    const viaLink = await tools['wsl-write'].execute({ path: linkPath, content: 'new through the link\n' }, {})
+    eq('a write through a symlink reports the resolved path', viaLink.path, linkTarget)
+    eq('and the target receives the content',
+      readText(await tools['wsl-read'].execute({ path: linkTarget }, {})), 'new through the link')
+    eq('while the link is still a link',
+      (await tools.wsl.execute({
+        command: `test -L ${linkPath} && echo yes || echo no`, description: 'is the link still a link',
+      })).stdout.trim(),
+      'yes')
+
+    // A single line longer than the read window cannot be paged by line. Dropping the
+    // partial line used to answer "Showing lines 1-0 … Use offset=1", which invites a
+    // retry loop; naming the limit is the fix.
+    await tools['wsl-write'].execute({ path: `${fsRoot}/one-long-line.json`, content: 'x'.repeat(1_200_000) }, {})
+    await rejects('a line longer than the read window is refused with a way forward',
+      () => tools['wsl-read'].execute({ path: `${fsRoot}/one-long-line.json` }, {}), /longer than the .*read window/)
 
     // The panel switch is the authorisation for root in the file tools too, and a
     // refusal must never be a silent downgrade to the user account: a caller that
