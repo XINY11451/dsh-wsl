@@ -806,6 +806,50 @@ export function apply(ctx, settings = {}) {
     channel = null
   }
 
+  // The terminal context captured by the channel goes to the MODEL, not to the transcript:
+  // `systemPrompt.context` contributes hidden runtime context to the next request (the same
+  // mechanism working-directory and mnemon use), and the assembly hook forgets it afterwards
+  // so it is a one-shot for the message it belongs to. A host without `systemPrompt` keeps the
+  // old behaviour (nothing hidden, nothing shown).
+  try {
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['systemPrompt'], (inner) => {
+        try {
+          const systemPrompt = typeof inner?.get === 'function' ? inner.get('systemPrompt') : inner?.systemPrompt
+          if (systemPrompt === undefined || systemPrompt === null || typeof systemPrompt.context !== 'function') return
+          const baseOrder = typeof systemPrompt.getContextOrder === 'function'
+            ? Number(systemPrompt.getContextOrder('HARNESS_SOURCE'))
+            : Number.NaN
+          systemPrompt.context({
+            name: 'dsh-wsl:terminal-history',
+            order: Number.isFinite(baseOrder) ? baseOrder + 25 : 225,
+            // A context of the person's own terminal is data, not prompt text: no interpolation.
+            interpolate: false,
+            text: (context) => {
+              if (channel === null) return ''
+              const session = context?.agent?.session?.id ?? context?.agent?.id ?? ''
+              return channel.terminalContextFor(String(session))
+            },
+          })
+          ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+            const assembled = await next()
+            try {
+              const session = context?.agent?.session?.id ?? context?.agent?.id ?? ''
+              channel?.consumeTerminalContext?.(String(session))
+            } catch {
+              // Clearing is bookkeeping; it must never fail a request.
+            }
+            return assembled
+          })
+        } catch (error) {
+          console.warn('dsh-wsl-tool: could not register the terminal-history prompt context', error)
+        }
+      })
+    }
+  } catch {
+    // An older host without `systemPrompt` simply gets no hidden terminal context.
+  }
+
   // ---------------------------------------------------------------- self info
   //
   // The panel's 「复制插件信息」 needs facts this half already has and the browser

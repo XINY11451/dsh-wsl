@@ -5703,8 +5703,9 @@ async function channelUnitTests() {
           })()
         },
       }
+      let historyNow = Date.now()
       const historyChannel = createChannel({
-        ctx, config, wsl, transport: historyTransport, env: { USERPROFILE: historyHome },
+        ctx, config, wsl, transport: historyTransport, env: { USERPROFILE: historyHome }, now: () => historyNow,
       })
       const { port: historyPort } = await historyChannel.start()
       const sayOnHistory = (text, extraHeaders = {}) => new Promise((resolve, reject) => {
@@ -5728,7 +5729,10 @@ async function channelUnitTests() {
       const lastPromptText = () => calls.filter((entry) => entry[0] === 'prompt').at(-1)?.[1]?.content?.[0]?.text ?? ''
       try {
         const message = '解释一下这个报错'
-        const expectedHint = (id) => `（终端历史：如需这个终端之前的命令与输出，可调用 wsl-term 的 read 动作，id=${id}）`
+        const contextOf = () => historyChannel.terminalContextFor('history-session')
+        const contextHeader = '【终端历史】以下是这个终端在我回复这条消息之前的屏幕内容（只读快照，最多 100 行；'
+          + '如需更多可调用 wsl-term 的 read 动作，id=user-term）：\n'
+        const expectedContext = (body) => `${contextHeader}${body}\n【终端历史结束】`
         const screen = [
           'xiny@XINY9:~$ git status --short',
           ' M lib/tools/wsl.js',
@@ -5737,24 +5741,34 @@ async function channelUnitTests() {
           `xiny@XINY9:~$ dsh "${message}"`,
         ].join('\r\n')
         historyBehavior.screens.set('user-term', screen)
-        const withHint = await sayOnHistory(message)
+        const withContext = await sayOnHistory(message)
         const promptText = lastPromptText()
-        // The prompt carries ONE line pointing at the terminal; the screen itself stays out of
-        // the conversation (the model decides whether to read it with `wsl-term read`).
-        eq('a matched terminal adds exactly one hint line',
-          promptText, `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
-        check('the hint names the tool and the terminal id',
-          promptText.includes('wsl-term') && promptText.includes('id=user-term'), promptText)
-        check('no screen content is pasted into the conversation',
-          !promptText.includes('git status --short') && !promptText.includes('abc1234 fix: something')
-          && !promptText.includes('【终端历史'), promptText.slice(-260))
-        check('and the turn still completes', withHint.body.includes('~e 1'), withHint.body.slice(-90))
+        // The conversation message is exactly what the person typed; the screen went to the
+        // MODEL's hidden context instead.
+        eq('the conversation message is exactly what the person typed',
+          promptText, `${SAY_PREFIX}${message}`)
+        check('the conversation carries no history text at all',
+          !promptText.includes('【终端历史') && !promptText.includes('id=user-term')
+          && !promptText.includes('git status --short'), promptText)
+        const context = contextOf()
+        check('the terminal screen is captured for the model context',
+          context.includes('【终端历史】') && context.includes('【终端历史结束】'), context.slice(0, 160))
+        check('the context carries the old commands and the terminal id',
+          context.includes('git status --short') && context.includes('abc1234 fix: something')
+          && context.includes('id=user-term') && context.includes('最多 100 行'), context.slice(0, 420))
+        check('and the turn still completes', withContext.body.includes('~e 1'), withContext.body.slice(-90))
 
-        // Consecutive prompts on the same terminal each get the hint: the terminal is identified
-        // freshly every time (no per-session cache — one conversation can have several terminals).
+        // The assembly hook consumes it: a second request must not see the first message's screen.
+        historyChannel.consumeTerminalContext('history-session')
+        eq('consuming the context clears it', contextOf(), '')
+
+        // Consecutive prompts replace the capture; they never stack two screens in one context.
         await sayOnHistory(message)
-        eq('a second prompt on the same terminal carries the same hint',
-          lastPromptText(), `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
+        const firstContext = contextOf()
+        await sayOnHistory(message)
+        const secondContext = contextOf()
+        eq('a second prompt replaces the captured context', secondContext, firstContext)
+        eq('and only one screen is held', (secondContext.match(/【终端历史】/g) ?? []).length, 1)
 
         // No transport at all (a build without one): exactly the old prompt shape.
         await call('POST', '/say', message, {
@@ -5763,33 +5777,38 @@ async function channelUnitTests() {
         eq('without a transport the prompt is exactly the old shape', lastPromptText(), `${SAY_PREFIX}${message}`)
 
         // A screen that is missing the typed command (a different tab, a cleared screen).
+        historyChannel.consumeTerminalContext('history-session')
         historyBehavior.screens.clear()
         historyBehavior.screens.set('user-term', 'xiny@XINY9:~$ ls -la\r\ntotal 0\r\n')
         await sayOnHistory(message)
-        eq('a screen without the typed command adds no history', lastPromptText(), `${SAY_PREFIX}${message}`)
+        eq('a screen without the typed command adds no context', contextOf(), '')
+        eq('and the prompt stays exactly the message', lastPromptText(), `${SAY_PREFIX}${message}`)
 
         // A failing terminal list / attach is silent context loss, never a failed prompt.
+        historyChannel.consumeTerminalContext('history-session')
         historyBehavior.screens.clear()
         historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh "${message}"`)
         historyBehavior.userTerminalsError = new Error('no page is polling')
         const failingList = await sayOnHistory(message)
         eq('a failing terminal list still sends the prompt unchanged', lastPromptText(), `${SAY_PREFIX}${message}`)
+        eq('and captures no context', contextOf(), '')
         check('and the turn itself is unaffected', failingList.body.includes('~e 1'), failingList.body.slice(-90))
         historyBehavior.userTerminalsError = null
         historyBehavior.followError = new Error('the attach was refused')
-        const failingFollow = await sayOnHistory(message)
-        void failingFollow
+        await sayOnHistory(message)
         eq('a failing attach still sends the prompt unchanged', lastPromptText(), `${SAY_PREFIX}${message}`)
+        eq('and captures no context either', contextOf(), '')
         historyBehavior.followError = null
 
-        // A tool-invoked prompt (caller header present) was never typed at a screen, so it gets
-        // no history even though the transport could read one.
+        // A tool-invoked prompt is not typed at a screen, so it never captures one.
+        historyChannel.consumeTerminalContext('history-session')
         const readsBefore = historyBehavior.calls.userTerminals
         await sayOnHistory(message, { 'x-dsh-wsl-caller': 'session-other' })
-        eq('a tool-invoked prompt is not given screen history', lastPromptText(), `${SAY_PREFIX}${message}`)
-        eq('and the transport is not even consulted for it', historyBehavior.calls.userTerminals, readsBefore)
+        eq('a tool-invoked prompt keeps the plain message', lastPromptText(), `${SAY_PREFIX}${message}`)
+        eq('and the transport is not consulted for it', historyBehavior.calls.userTerminals, readsBefore)
+        eq('and no context is captured', contextOf(), '')
 
-        // A long screen changes nothing at the prompt: the body never travels, only the hint.
+        // A long screen is bounded: the newest 100 lines, cut at the echoed command's line start.
         const longScreen = [
           ...Array.from({ length: 150 }, (_, index) => `out-${String(index + 1).padStart(3, '0')} ${'x'.repeat(20)}`),
           `xiny@XINY9:~$ dsh "${message}"`,
@@ -5797,16 +5816,106 @@ async function channelUnitTests() {
         historyBehavior.screens.clear()
         historyBehavior.screens.set('user-term', longScreen)
         const longSay = await sayOnHistory(message)
-        eq('a 150-line screen still adds only the one-line hint',
-          lastPromptText(), `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
-        check('and no screen line reaches the conversation',
-          !lastPromptText().includes('out-001') && !lastPromptText().includes('out-150'),
-          lastPromptText().slice(-200))
+        const longContext = contextOf()
+        check('a 150-line screen keeps the newest 100 lines in the context',
+          longContext.includes('out-150') && !longContext.includes('out-001'), longContext.slice(0, 200))
+        eq('and exactly 100 screen lines travel',
+          (longContext.match(/^out-\d{3} /gm) ?? []).length, 100)
+        check('the echoed dsh command line is not part of the context',
+          !longContext.includes('dsh "'), longContext.slice(-160))
+        eq('while the prompt is still just the message', lastPromptText(), `${SAY_PREFIX}${message}`)
         check('and that turn still completes', longSay.body.includes('~e 1'), longSay.body.slice(-90))
+
+        // A captured screen expires: five minutes later it must not follow an unrelated request.
+        historyNow += 5 * 60 * 1000 + 1
+        eq('a captured screen expires after five minutes', contextOf(), '')
       } finally {
         await historyChannel.stop()
         try { rmSync(historyHome, { recursive: true, force: true }) } catch {}
       }
+    }
+
+    // The captured screen reaches the MODEL, not the transcript: `index.js` registers a hidden
+    // `systemPrompt.context` that reads it for the calling session, plus an assembly hook that
+    // consumes it once the request is built. This is the wiring check for that registration.
+    {
+      const empty = () => ({ readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) })
+      const subprocess = {
+        spawn() {
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            terminate() {},
+            collected: { stdout: empty(), stderr: empty() },
+          }
+        },
+        resolveExecutable: async (name) => `C:/Windows/System32/${name}`,
+        async spawnTerminal() { return makeBridgePtyHandle() },
+      }
+      const makeHost = ({ withSystemPrompt = true, withContextOrder = true } = {}) => {
+        const tools = {}
+        const contexts = []
+        const assembleHandlers = []
+        const orderRequests = []
+        const systemPrompt = {
+          context(spec) { contexts.push(spec) },
+          ...(withContextOrder ? { getContextOrder(name) { orderRequests.push(name); return 200 } } : {}),
+        }
+        const webServer = { register() { return () => {} } }
+        const ctx = {
+          tools: {
+            register(tool) {
+              tools[tool.name] = tool
+              return () => { if (tools[tool.name] === tool) delete tools[tool.name] }
+            },
+          },
+          subprocess,
+          get(name) {
+            if (name === 'systemPrompt' && withSystemPrompt) return systemPrompt
+            if (name === 'subprocess') return subprocess
+            return undefined
+          },
+          on(name, callback) {
+            if (name === 'system-prompt/assemble') assembleHandlers.push(callback)
+            return () => {}
+          },
+          inject(deps, callback) {
+            const list = Array.isArray(deps) ? deps : []
+            if (list.includes('systemPrompt')) {
+              if (withSystemPrompt) callback({ systemPrompt })
+              return
+            }
+            if (list.includes('webServer')) callback({ webServer, effect: () => () => {} })
+          },
+          effect() { return () => {} },
+        }
+        return { ctx, tools, contexts, assembleHandlers, orderRequests }
+      }
+
+      const host = makeHost()
+      apply(host.ctx, {})
+      eq('the plugin registers one hidden terminal-history context', host.contexts.length, 1)
+      eq('it is named for this plugin', host.contexts[0]?.name, 'dsh-wsl:terminal-history')
+      eq('it sits just after the harness-source context', host.contexts[0]?.order, 225)
+      eq('and is not interpolated (terminal text is data)',
+        host.contexts[0]?.interpolate, false)
+      eq('with no captured screen its text is empty',
+        host.contexts[0]?.text({ agent: { session: { id: 'no-context' } } }), '')
+      eq('it asks the host where HARNESS_SOURCE sits', host.orderRequests[0], 'HARNESS_SOURCE')
+      eq('the assembly hook is registered', host.assembleHandlers.length, 1)
+      const assembled = await host.assembleHandlers[0](undefined, { agent: { session: { id: 'no-context' } } }, async () => 'assembled')
+      eq('the assembly hook passes the assembly through', assembled, 'assembled')
+
+      // A host whose systemPrompt has no ordering helper still gets the documented fallback.
+      const plainHost = makeHost({ withContextOrder: false })
+      apply(plainHost.ctx, {})
+      eq('without a context order the fallback is 225', plainHost.contexts[0]?.order, 225)
+
+      // And a host without `systemPrompt` at all must still mount.
+      const bareHost = makeHost({ withSystemPrompt: false })
+      let applyThrew = false
+      try { apply(bareHost.ctx, {}) } catch { applyThrew = true }
+      eq('a host without systemPrompt still mounts the plugin', applyThrew, false)
+      eq('and registers no hidden context', bareHost.contexts.length, 0)
     }
 
     // Auto-installing the `dsh` shim: a missing or outdated file in the distro is repaired when
