@@ -6370,6 +6370,24 @@ async function channelUnitTests() {
       shim.includes('⏱ 思考') && shim.includes('开始输出')
       && shim.includes('⏱ 已用') && shim.includes('第 %d 步'),
       shim.slice(-2000))
+    // One status line, repainted in place: a `\n` at both ends scrolled a line per throttle
+    // tick, so a 60-step turn filled the terminal with "已用 … 第 N 步" lines.
+    {
+      const statusFn = shim.slice(shim.indexOf('maybe_step_status()'))
+      const statusBody = statusFn.slice(0, statusFn.indexOf('\n  }'))
+      check('the step status repaints one line instead of starting a new one',
+        statusBody.includes("if [ \"$status_shown\" = 1 ]")
+        && statusBody.includes("printf '\\r\\033[2K'")
+        && /printf '\\033\[2m⏱ 已用 %s · 第 %d 步\\033\[0m' "\$DURATION" "\$step_count"/.test(statusBody)
+        && !statusBody.includes('第 %d 步\\033[0m\\n'),
+        statusBody)
+      check('a text frame clears the status line before printing the answer',
+        /'~a '\*\)[\s\S]{0,420}clear_status[\s\S]{0,120}printf '%s'/.test(shim))
+      check('and a completed turn reuses the status row instead of adding a blank one',
+        shim.includes('if ! clear_status; then printf')
+        // eslint-disable-next-line no-useless-escape
+        && shim.includes("✓ 完成"))
+    }
     check('the completion line formats minutes and seconds',
       shim.includes('分${sec}秒') && shim.includes('✓ 完成') && shim.includes('format_duration_ms'),
       shim.slice(-2000))

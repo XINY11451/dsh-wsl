@@ -321,6 +321,7 @@ cmd_say() {
   local start_us=0 last_status_us=0 step_count=0 last_reason_ms=0
   local DURATION='' TOKENS='' sec='' frac='' tin_text='' tout_text='' reason_note=''
   local steer_pid='' pause_text='' was_paused=0
+  local status_shown=0
   # The reader and the frame loop are different processes; a flag file is the channel between
   # them: while it exists the answer is held back so the person can type a clean line.
   pause_flag="$STATE_DIR/pause.$$"
@@ -351,8 +352,21 @@ cmd_say() {
   }
   # True while the terminal reader holds the answer back for a compose line.
   paused() { [ -e "$pause_flag" ]; }
+  # The step line is ONE line, repainted in place. It used to start and end with a newline, so a
+  # 60-step turn scrolled ~60 "已用 … 第 N 步" lines past the reader instead of showing a clock.
+  # clear_status erases it and reports whether there was one (the completion line then reuses that
+  # row instead of adding a blank one).
+  clear_status() {
+    if [ "${status_shown:-0}" = 1 ]; then
+      printf '\r\033[2K'
+      status_shown=0
+      return 0
+    fi
+    return 1
+  }
   flush_paused_output() {
     if [ -n "${pause_text:-}" ]; then
+      clear_status
       printf '%s' "$pause_text"
       pause_text=''
     fi
@@ -523,7 +537,14 @@ cmd_say() {
     clock_us
     [ $(( (CLOCK_US - last_status_us) / 1000 )) -ge 10000 ] || return
     format_clock_ms $(( (CLOCK_US - start_us) / 1000 ))
-    printf '\n\033[2m⏱ 已用 %s · 第 %d 步\033[0m\n' "$DURATION" "$step_count"
+    if [ "$status_shown" = 1 ]; then
+      printf '\r\033[2K'
+    else
+      # First status after a text run: move off the answer's line, then paint on a quiet one.
+      printf '\n\033[2K'
+    fi
+    printf '\033[2m⏱ 已用 %s · 第 %d 步\033[0m' "$DURATION" "$step_count"
+    status_shown=1
     last_status_us=$CLOCK_US
   }
   clock_us
@@ -677,6 +698,7 @@ cmd_say() {
             # so their line stays clean (a compose is seconds, so the buffer stays small).
             pause_text+="$(printf '%s' "${line#'~a '}" | base64 -d)"
           else
+            clear_status
             printf '%s' "${line#'~a '}" | base64 -d
           fi
           ;;
@@ -688,6 +710,7 @@ cmd_say() {
         '~x '*)
           stop_reason
           resume_output
+          clear_status
           cleanup_balance
           cleanup_say
           text_reason=$(printf '%s' "${line#'~x '}" | base64 -d)
@@ -715,7 +738,7 @@ cmd_say() {
           format_duration_ms "$ms"
           format_tokens "$tin"; tin_text=$TOKENS
           format_tokens "$tout"; tout_text=$TOKENS
-          printf '\n'
+          if ! clear_status; then printf '\n'; fi
           printf '✓ 完成 %s · %s 步 · in %s / out %s tok%s\n' \
             "$DURATION" "${steps:-0}" "$tin_text" "$tout_text" "$reason_note"
           # A large landing conversation is the usual reason a terminal turn takes seconds: each
@@ -729,7 +752,7 @@ cmd_say() {
           ended=1
           [ "$ok" = 1 ] && exit 0 || exit 1
           ;;
-        'err'*) stop_reason; resume_output; cleanup_balance; cleanup_say; die "${line#err	}" ;;
+        'err'*) stop_reason; resume_output; clear_status; cleanup_balance; cleanup_say; die "${line#err	}" ;;
         *) printf '%s\n' "$line" ;;
       esac
     done < <(post say "$prompt" "$session"; printf '~exit %s\n' "$?")
