@@ -5908,6 +5908,24 @@ async function channelUnitTests() {
         eq('a screen without the typed command is named as no match',
           historyChannel.historyState().reason, 'no-match')
 
+        // The one-shot is advanced in TWO assemblies, not one: the agent loop assembles a step
+        // and then refreshes the context right before the request. Dropping the entry on the
+        // first assembly emptied the provider before the request that needed it (live bug,
+        // 2026-10-25: capture ok, `pending` 0, no history in the request).
+        historyChannel.consumeTerminalContext('history-session')
+        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ git status --short\r\ndsh "${message}"`)
+        await sayOnHistory(message)
+        eq('a fresh capture starts unserved', historyChannel.historyState().served, false)
+        eq('the first assembly marks it served instead of dropping it',
+          historyChannel.rotateTerminalContext('history-session'), false)
+        const servedContext = contextOf()
+        check('so the refresh that builds the request still carries it',
+          servedContext.includes('git status --short'), servedContext.slice(0, 140))
+        eq('the next assembly drops it', historyChannel.rotateTerminalContext('history-session'), true)
+        eq('and later steps of the turn see no history', contextOf(), '')
+        eq('rotating a session with no capture is a no-op',
+          historyChannel.rotateTerminalContext('history-session'), false)
+
         // A captured screen expires: five minutes later it must not follow an unrelated request.
         historyNow += 5 * 60 * 1000 + 1
         eq('a captured screen expires after five minutes', contextOf(), '')

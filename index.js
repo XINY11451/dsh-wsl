@@ -808,9 +808,13 @@ export function apply(ctx, settings = {}) {
 
   // The terminal context captured by the channel goes to the MODEL, not to the transcript:
   // `systemPrompt.context` contributes hidden runtime context to the next request (the same
-  // mechanism working-directory and mnemon use), and the assembly hook forgets it afterwards
-  // so it is a one-shot for the message it belongs to. A host without `systemPrompt` keeps the
-  // old behaviour (nothing hidden, nothing shown).
+  // mechanism working-directory and mnemon use), and it is a one-shot for the message it
+  // belongs to. The one-shot is advanced here, at the end of an assembly — NOT taken here:
+  // the agent loop assembles a step twice (`assemble()` and then `refreshContext()` right
+  // before the request), so dropping the entry in this waterfall emptied the provider before
+  // the request that needed it (live-verified 2026-10-25: the capture was fine, the request's
+  // runtime context was empty). The first assembly marks it served; the next one drops it.
+  // A host without `systemPrompt` keeps the old behaviour (nothing hidden, nothing shown).
   try {
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['systemPrompt'], (inner) => {
@@ -835,9 +839,9 @@ export function apply(ctx, settings = {}) {
             const assembled = await next()
             try {
               const session = context?.agent?.session?.id ?? context?.agent?.id ?? ''
-              channel?.consumeTerminalContext?.(String(session))
+              channel?.rotateTerminalContext?.(String(session))
             } catch {
-              // Clearing is bookkeeping; it must never fail a request.
+              // Bookkeeping; it must never fail a request.
             }
             return assembled
           })
