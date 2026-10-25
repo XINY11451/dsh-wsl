@@ -320,7 +320,7 @@ cmd_say() {
   local got_frame=0 attempt=0 say_exit=0
   local start_us=0 last_status_us=0 step_count=0 last_reason_ms=0
   local DURATION='' TOKENS='' sec='' frac='' tin_text='' tout_text='' reason_note=''
-  local steer_pid='' pause_text=''
+  local steer_pid='' pause_text='' was_paused=0
   # The reader and the frame loop are different processes; a flag file is the channel between
   # them: while it exists the answer is held back so the person can type a clean line.
   pause_flag="$STATE_DIR/pause.$$"
@@ -625,12 +625,16 @@ cmd_say() {
           continue
           ;;
       esac
-      # A buffer left by a compose line is the answer: once the reader released the pause,
-      # the next frame flushes it before printing more. The compose also hid the turn's clock
-      # (the thinking line is deliberately not repainted over a line a person is typing), so
-      # the clock is shown again here instead of leaving the last frozen number above: by this
-      # point the turn has entered the text phase and the next step updates it at once.
-      if [ -n "$pause_text" ] && ! paused; then
+      # Compose pause handling. The answer held while the person typed is the first thing to
+      # release; and because the think line is deliberately not repainted over their input, the
+      # clock has to be shown again as soon as output resumes — otherwise the terminal keeps the
+      # last frozen number until the next step crosses the status throttle ("the timer stopped
+      # after inserting"). `was_paused` tracks the transition, not just a non-empty buffer: a
+      # pause during the thinking phase usually buffers no text at all.
+      if paused; then
+        was_paused=1
+      elif [ "$was_paused" = 1 ]; then
+        was_paused=0
         flush_paused_output
         if [ "$reason" = 2 ]; then
           last_status_us=0
