@@ -252,11 +252,12 @@ const sectionIn = (nodes, title) => nodes.find((node) => node.type === 'section'
       || (Array.isArray(node.props.children[0].props?.children)
         && node.props.children[0].props.children.includes(title))))
 const switches = found.filter((node) => node.type?.primitiveName === 'Switch')
-check('it renders one switch per switchable feature', switches.length === 11,
+check('it renders one switch per switchable feature', switches.length === 15,
   `found ${switches.length}; rendered: ${found.map((node) => String(node.type?.primitiveName ?? node.type)).join(',')}`)
 const labels = switches.map((node) => node.props?.label).filter((v) => typeof v === 'string')
 for (const expected of [
   'wsl 命令执行', 'wsl-path 路径转换', 'wsl-env 能力体检',
+  'wsl-read 读取文件', 'wsl-write 写入文件', 'wsl-edit 精确替换', 'wsl-grep 搜索内容',
   'wsl-doctor 项目体检', 'wsl-bootstrap 安装工具链',
   '后台任务', '自动转换路径', '默认跟随会话工作区', '危险命令守卫', '管理员模式（root）',
   '启用 dsh 命令',
