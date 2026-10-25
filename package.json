@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "2.1.0",
-  "description": "Linux-native DSH, extended to WSL. Multi-step work shares one long-lived shell (subtasks above the composer); one-off commands start clean, in parallel, with timeouts. A terminal you opened can be shared: visible, read-only until you take the keyboard back; from WSL, `dsh` speaks into a chosen conversation. Path conversion, environment checks; destructive commands ask first. Runs as you, below the DSH sandbox (it does not confine it).",
+  "version": "2.2.0",
+  "description": "Linux-native DSH, extended to WSL. Multi-step work shares one long-lived shell; one-off commands start fresh, in parallel, with timeouts. Files can be read, written, edited and searched inside the distribution. A terminal you opened is visible and read-only until you take the keyboard back; from WSL, `dsh` speaks into a chosen conversation. Path conversion, environment checks; destructive commands ask first. Runs as you, below the DSH sandbox.",
   "type": "module",
   "main": "index.js",
   "exports": {
