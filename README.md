@@ -281,7 +281,7 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
                                                                → exactly one match, or it refuses
 ```
 
-Seven things worth knowing:
+Eight things worth knowing:
 
 - **`read` and `write` answer in the host's own words.** `wsl-read` returns the
   `<path>/<type>/<content>` envelope with numbered lines and the same `(End of file - total N
@@ -292,6 +292,12 @@ Seven things worth knowing:
   only the answer follows the host's shape. `wsl-edit` keeps its own one-line summary,
   `path  [2 replacements, 1.2 KB → 1.2 KB]`, because for a replacement the count and the size
   change are the two facts worth reporting.
+- **A read is a card in the UI, not a wall of framed text.** The same window reaches the
+  interface as the platform's own `read` card — numbered lines, the file's total, and a language
+  hint taken from the extension (`python`, `typescript`, …) so it can be syntax-highlighted. The
+  card is rebuilt from the window stored with the result, so a replayed read redraws without
+  touching the distribution again; a UI without the read capability falls back to the same lines
+  without the envelope tags.
 - **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
   with a message instead of being returned as mojibake. The workaround is the `wsl` tool
   (`base64`, `od`, `cp`), which is also what to use for anything these three do not cover.

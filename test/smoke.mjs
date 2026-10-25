@@ -3913,6 +3913,42 @@ async function toolTests(tools, shim) {
         rendered.includes('(Showing lines 2-3 of 4. Use offset=4 to continue.)'), rendered.slice(-120))
     }
 
+    // The UI side of a read: the platform's `read` card, not the model-facing envelope.
+    // The structured window cannot be recovered from the text, so it rides in the persisted
+    // metadata and `presentResult` narrows it back — which is also what makes a replayed
+    // read redraw without touching the file again.
+    {
+      const call = tools['wsl-read'].presentCall({ path: samplePath, offset: 3 })
+      eq('a read call is a generic card that knows it is a read', call.card + '/' + call.kind, 'generic/read')
+      check('and its title names the file', call.title.includes(samplePath), call.title)
+      eq('and it follows the file at the first line read', call.locations[0].line, 3)
+
+      const meta = tools['wsl-read'].output.presentationMeta({}, whole)
+      const card = tools['wsl-read'].presentResult({ path: samplePath }, { content: [], isError: false, meta })
+      eq('a completed read presents the platform read card', card.card, 'read')
+      eq('the card carries the resolved path', card.path, samplePath)
+      eq('and the window start', card.offset, 1)
+      eq('and every numbered line', card.lines.length, 4)
+      eq('and the file total, so the UI can say "4 of 4"', card.totalLines, 4)
+      eq('a .txt file has no language hint, so it renders as plain text', card.lang, undefined)
+      check('a UI without the read capability gets the window without the envelope',
+        card.content[0].text.startsWith('1: 第一行：中文') && !card.content[0].text.includes('<path>'),
+        card.content[0].text.slice(0, 80))
+
+      // The hint is what makes the card a code view instead of a wall of text.
+      await tools['wsl-write'].execute({ path: `${fsRoot}/probe.py`, content: 'print(1)\n' }, {})
+      const py = await tools['wsl-read'].execute({ path: `${fsRoot}/probe.py` }, {})
+      const pyMeta = tools['wsl-read'].output.presentationMeta({}, py)
+      eq('a .py file carries a python hint',
+        tools['wsl-read'].presentResult({ path: py.path }, { content: [], isError: false, meta: pyMeta }).lang, 'python')
+      eq('the hint is persisted with the result, so a replay keeps it', pyMeta.lang, 'python')
+
+      eq('a failed read presents nothing, so the UI falls back',
+        tools['wsl-read'].presentResult({ path: samplePath }, { content: [], isError: true }), undefined)
+      eq('a replayed read without metadata presents nothing',
+        tools['wsl-read'].presentResult({ path: samplePath }, { content: [], isError: false }), undefined)
+    }
+
     // A directory, a missing path and a binary file are the three ways "read this file"
     // means something else. Each has its own message, because "failed" is not a diagnosis.
     await rejects('reading a directory is refused, and says so',
