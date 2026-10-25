@@ -3881,8 +3881,12 @@ async function toolTests(tools, shim) {
 
     const created = await tools['wsl-write'].execute({ path: samplePath, content: sampleText }, {})
     eq('a write to a path that was not there reports a create', created.operation, 'create')
-    eq('the write result carries the content it wrote', created.after, sampleText)
-    eq('a created file has no old side', created.before, null)
+    // The value names the file and what happened to it, and stops there: the content is
+    // already in the arguments (where the diff card reads it from, and where a replay
+    // still has it), and a before-image cannot be expressed — the host's schema subset
+    // has no `type: ['string', 'null']`, and a rejected schema unmounts the tool.
+    eq('the write result carries the file and the operation, not the content',
+      Object.keys(created).sort().join(','), 'operation,path')
     eq('write resolves the path to one absolute location', created.path, samplePath)
     {
       const rendered = tools['wsl-write'].output.render({}, created)[0].text
@@ -4061,7 +4065,7 @@ async function toolTests(tools, shim) {
       readText(await tools['wsl-read'].execute({ path: samplePath }, {})), 'replaced')
 
     const emptied = await tools['wsl-write'].execute({ path: `${fsRoot}/empty.txt`, content: '' }, {})
-    eq('writing empty content carries an empty body', emptied.after, '')
+    eq('writing empty content still reports a normal write', emptied.operation, 'create')
     eq('an empty file reads as empty rather than as an error',
       readText(await tools['wsl-read'].execute({ path: `${fsRoot}/empty.txt` }, {})), '')
 
@@ -4105,6 +4109,18 @@ async function toolTests(tools, shim) {
       () => tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: 'a,b' }, {}), /comma-separated/)
     await rejects('an empty pattern is refused',
       () => tools['wsl-grep'].execute({ pattern: '', path: grepRoot }, {}), /non-empty string/)
+
+    // GNU grep exits 2 as soon as ONE file it walked could not be read, while still
+    // having found everything in the files it could read — `/etc` is nothing but
+    // that case. Reading the status as failure discarded a correct answer, so the
+    // script buffers the body and only calls it an error when the body is empty too.
+    const unreadableRoot = `${grepRoot}/unreadable`
+    await tools['wsl-write'].execute({ path: `${unreadableRoot}/open.txt`, content: 'needle in the open\n' }, {})
+    await tools['wsl-write'].execute({ path: `${unreadableRoot}/closed.txt`, content: 'needle behind a door\n' }, {})
+    await tools.wsl.execute({ description: 'Make one file unreadable', command: `chmod 000 ${unreadableRoot}/closed.txt` }, {})
+    const partiallyReadable = await tools['wsl-grep'].execute({ pattern: 'needle', path: unreadableRoot }, {})
+    eq('a file it cannot read does not throw away the matches it could', partiallyReadable.total, 1)
+    await tools.wsl.execute({ description: 'Put the mode back', command: `chmod 644 ${unreadableRoot}/closed.txt` }, {})
 
     // The panel switch is the authorisation for root in the file tools too, and a
     // refusal must never be a silent downgrade to the user account: a caller that
@@ -4208,6 +4224,37 @@ async function toolTests(tools, shim) {
   // A switch is a parameter and a parameter is billed on every request whether it is used
   // or not, which is why the descriptions say what the switch is FOR in one clause instead
   // of listing everything root can do.
+  // The host asserts a SUPPORTED SUBSET of JSON Schema when a tool registers, and one
+  // rule in it is not obvious: `type` may not be an array
+  // (`packages/core/tools/src/json-schema.ts:305`, "type arrays are not supported").
+  // A violation here is invisible: the plugin catches the registration throw, every
+  // other tool mounts, and the rejected one only surfaces later as `unknown tool` at
+  // call time. `wsl-write` shipped exactly that way — a nullable `before` field — so
+  // the rule is checked rather than trusted.
+  console.log('\nmodel-facing schemas: the host subset')
+  const typeArrays = (node, at) => {
+    if (node === null || typeof node !== 'object') return []
+    const found = Array.isArray(node.type) ? [`${at}.type is an array`] : []
+    for (const [key, value] of Object.entries(node)) {
+      // Data-valued keywords may legitimately hold anything; only shape keywords are walked.
+      if (key === 'enum' || key === 'default' || key === 'examples' || key === 'const') continue
+      if (value === null || typeof value !== 'object') continue
+      if (Array.isArray(value)) value.forEach((item, index) => { found.push(...typeArrays(item, `${at}.${key}[${index}]`)) })
+      else found.push(...typeArrays(value, `${at}.${key}`))
+    }
+    return found
+  }
+  for (const [name, tool] of Object.entries(optInTools)) {
+    check(`${name}: parameters declare no type arrays (the host rejects them)`,
+      typeArrays(tool.parameters, 'parameters').length === 0,
+      typeArrays(tool.parameters, 'parameters').join(', ') || 'none')
+    check(`${name}: output schema declares no type arrays (the host rejects them)`,
+      typeArrays(tool.output.schema, 'schema').length === 0,
+      typeArrays(tool.output.schema, 'schema').join(', ') || 'none')
+  }
+  check('the walker finds a nullable type where it is one',
+    typeArrays({ type: 'object', properties: { before: { type: ['string', 'null'] } } }, 'schema').length === 1,
+    JSON.stringify(typeArrays({ type: 'object', properties: { before: { type: ['string', 'null'] } } }, 'schema')))
   console.log('\nmodel-facing catalog budget')
   let catalog = 0
   for (const [name, tool] of Object.entries(tools)) {
