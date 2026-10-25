@@ -25,7 +25,7 @@ import { apply, buildConfig } from '../index.js'
 import { resolveConfig } from '../lib/config.js'
 import { pickSchemaBuilder } from '../lib/schema.js'
 import { buildCdCommand, quotePath, shellQuote, windowsPathToWsl } from '../lib/paths.js'
-import { FS_EXIT, grepFallbackPattern, grepScript, parseGrepZ, parseRgJson, previewLine, readScript, writeScript } from '../lib/fs-ops.js'
+import { FS_EXIT, expandIncludeGlobs, grepFallbackPattern, grepScript, parseGrepZ, parseRgJson, previewLine, readScript, writeScript } from '../lib/fs-ops.js'
 import { computeHunks, HUNK_CONTEXT } from '../lib/hunks.js'
 import { destructiveReason } from '../lib/guard.js'
 import { channelSessionOf, createChannel, firstUserLine, SAY_PREFIX, sessionRecordOf, titlesOf, validSessionId, walletText } from '../lib/channel.js'
@@ -3835,6 +3835,19 @@ async function toolTests(tools, shim) {
     const bare = grepScript({ path: '.', pattern: 'x' })
     check('without an include neither engine gets a filter',
       !bare.includes('--glob=') && !bare.includes('--include='))
+
+    // `{a,b}` is ripgrep shorthand GNU grep does not share: passed through, grep
+    // matches no file and the search answers "nothing found". It is expanded.
+    const braced = grepScript({ path: '.', pattern: 'x', include: '*.{js,jsx}' })
+    check('a brace alternation becomes one filter per alternative',
+      braced.includes("--glob='*.js'") && braced.includes("--glob='*.jsx'")
+      && braced.includes("--include='*.js'") && braced.includes("--include='*.jsx'"), braced.slice(0, 500))
+    check('and no filter carries the braces',
+      !braced.includes('--glob=\'*.{js,jsx}\'') && !braced.includes('--include=\'*.{js,jsx}\''))
+    const expanded = expandIncludeGlobs('src/*.{ts,tsx}')
+    check('the expansion keeps the directory part', expanded.join(',') === 'src/*.ts,src/*.tsx', expanded.join(','))
+    check('a plain glob is itself', expandIncludeGlobs('*.md').join(',') === '*.md')
+    check('an unbalanced brace is left alone', expandIncludeGlobs('*.{js').join(',') === '*.{js')
   }
 
   // Two properties of the file scripts that are cheaper to read than to run, and
@@ -3858,12 +3871,21 @@ async function toolTests(tools, shim) {
       plain.includes('stat -c %a') && plain.includes('chmod "$m"'), plain)
     check('an unresolvable symlink is refused instead of replacing the link',
       plain.includes('if [ -L "$p" ]') && plain.includes('readlink -f -- "$p"'))
+    // A FIFO/socket/device node is not a file to replace: `mv` over it would turn it
+    // into a regular file (a live socket stops working, /dev/null becomes text).
+    check('only a regular file is replaced',
+      plain.includes('if [ -e "$p" ] && [ ! -f "$p" ]') && plain.includes('is not a regular file')
+      && plain.includes(`exit ${FS_EXIT.NOT_FILE}`), plain.slice(0, 700))
     const owned = writeScript('/tmp/a', { keepOwner: true })
     check('keepOwner copies the owner as well', owned.includes('chown --reference="$p" -- "$t"'), owned)
     check('keepOwner still copies the mode', owned.includes('chmod --reference="$p" -- "$t"'))
     check('a failed chown never fails the write',
       owned.includes('if chown --reference="$p" -- "$t" 2>/dev/null; then :;')
       && owned.includes('chown "$o" -- "$t" 2>/dev/null || :'), owned)
+    // A NEW file created by a root call takes the directory's owner: handing it to
+    // root inside the user's tree is a change nobody asked for.
+    check('a root create gives the new file the directory owner',
+      owned.includes('stat -c %u:%g -- "$d"'), owned.slice(-900))
 
     // The scratch-file exit code has to BE a number: `exit ${FS_EXIT.INTERNAL}`
     // with a missing entry makes bash print "numeric argument required" and leave
@@ -3871,6 +3893,17 @@ async function toolTests(tools, shim) {
     check('the search script always exits with a number',
       !/\bexit undefined\b/.test(grepScript({ path: '.', pattern: 'x' }))
       && Number.isInteger(FS_EXIT.INTERNAL) && FS_EXIT.INTERNAL > 0, String(FS_EXIT.INTERNAL))
+
+    // The search body is capped by the script, not by the transport: the transport
+    // keeps the TAIL, so an uncapped big result lost the header and the tool reported
+    // "no header line" instead of its first matches.
+    const cappedSearch = grepScript({ path: '.', pattern: 'x', maxBytes: 1024 })
+    check('the search caps its own body one byte past the budget',
+      cappedSearch.includes('head -c 1025 -- "$body"'), cappedSearch.slice(-500))
+    check('and the header carries the partial flag',
+      cappedSearch.includes("printf 'DSHFS %s %s\\n' \"$engine\" \"$partial\""), cappedSearch.slice(-500))
+    check('without a budget the whole body is printed',
+      grepScript({ path: '.', pattern: 'x' }).includes('cat -- "$body"'))
 
     // `\d` is the one rg escape GNU grep -E reads as a literal `d`: leaving it
     // alone turns `\d+` into "matches dd" — an exit-0 answer that is silently
@@ -4134,6 +4167,18 @@ async function toolTests(tools, shim) {
 
     const narrowed = await tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: '*.ts' }, {})
     eq('include restricts the search to one glob', narrowed.total, 2)
+    // `{a,b}` alternation is the one list-like include: expanded into simple filters,
+    // so the engines agree instead of the GNU grep fallback matching no file at all.
+    await tools['wsl-write'].execute({ path: `${grepRoot}/brace/a.js`, content: 'brace alpha\n' }, {})
+    await tools['wsl-write'].execute({ path: `${grepRoot}/brace/b.jsx`, content: 'brace alpha\n' }, {})
+    await tools['wsl-write'].execute({ path: `${grepRoot}/brace/c.ts`, content: 'brace alpha\n' }, {})
+    const bracedSearch = await tools['wsl-grep'].execute({
+      pattern: 'brace alpha', path: `${grepRoot}/brace`, include: '*.{js,jsx}',
+    }, {})
+    eq('a brace alternation finds the files of both alternatives', bracedSearch.total, 2)
+    check('and only those files',
+      bracedSearch.matches.every((match) => /\.(js|jsx)$/.test(match.path)),
+      JSON.stringify(bracedSearch.matches.map((match) => match.path)))
     const nothing = await tools['wsl-grep'].execute({ pattern: 'zzz-not-here', path: grepRoot }, {})
     eq('a search that finds nothing succeeds with nothing', nothing.total, 0)
     eq('and says so in one line', tools['wsl-grep'].output.render({}, nothing)[0].text, 'No matches found')
@@ -4154,7 +4199,31 @@ async function toolTests(tools, shim) {
     await tools.wsl.execute({ description: 'Make one file unreadable', command: `chmod 000 ${unreadableRoot}/closed.txt` }, {})
     const partiallyReadable = await tools['wsl-grep'].execute({ pattern: 'needle', path: unreadableRoot }, {})
     eq('a file it cannot read does not throw away the matches it could', partiallyReadable.total, 1)
+    eq('and the result says it is partial', partiallyReadable.partial, true)
+    check('which the rendered text spells out',
+      tools['wsl-grep'].output.render({}, partiallyReadable)[0].text.includes('could not be read'),
+      tools['wsl-grep'].output.render({}, partiallyReadable)[0].text.slice(-160))
     await tools.wsl.execute({ description: 'Put the mode back', command: `chmod 644 ${unreadableRoot}/closed.txt` }, {})
+
+    // `include` filters NAMES. A path glob means the rg glob syntax under one engine
+    // and nothing at all under the other, so it is refused with a way forward.
+    await rejects('an include with a path separator is refused, with a way forward',
+      () => tools['wsl-grep'].execute({ pattern: 'alpha', path: grepRoot, include: 'sub/*.ts' }, {}),
+      /filters file NAMES/)
+
+    // A result bigger than the transport window used to lose its header line (the
+    // window keeps the tail) and fail as "no header line"; the script now caps its
+    // own body, so it answers with the first matches and says it was cut.
+    const bigLines = Array.from(
+      { length: 40_000 },
+      (_, index) => `alpha line ${String(index).padStart(6, '0')}`,
+    ).join('\n') + '\n'
+    await tools['wsl-write'].execute({ path: `${grepRoot}/big.txt`, content: bigLines }, {})
+    const big = await tools['wsl-grep'].execute({ pattern: 'alpha', path: `${grepRoot}/big.txt` }, {})
+    check('a result larger than the window is capped, not broken',
+      big.truncated === true && big.matches.length === 250,
+      JSON.stringify({ total: big.total, matches: big.matches.length, truncated: big.truncated }))
+    check('and it still saw more than it shows', big.total > 250, String(big.total))
 
     // `\d` on the engine the distribution actually has: Ubuntu ships no `rg`, so this
     // runs the GNU grep fallback, where `\d` is a literal `d` — before the translation
@@ -4178,6 +4247,17 @@ async function toolTests(tools, shim) {
     eq('while the link is still a link',
       (await tools.wsl.execute({
         command: `test -L ${linkPath} && echo yes || echo no`, description: 'is the link still a link',
+      })).stdout.trim(),
+      'yes')
+
+    // A FIFO (or a socket/device node) is not a file to replace: `mv` over it would
+    // turn it into a regular file — a live service's socket would stop working.
+    await tools.wsl.execute({ command: `mkfifo ${fsRoot}/pipe.fifo`, description: 'make a FIFO' })
+    await rejects('writing to a FIFO is refused instead of replacing it',
+      () => tools['wsl-write'].execute({ path: `${fsRoot}/pipe.fifo`, content: 'x' }, {}), /not a regular file/)
+    eq('and the FIFO is still a FIFO',
+      (await tools.wsl.execute({
+        command: `test -p ${fsRoot}/pipe.fifo && echo yes || echo no`, description: 'is it still a FIFO',
       })).stdout.trim(),
       'yes')
 
@@ -4229,6 +4309,19 @@ async function toolTests(tools, shim) {
     check('the model-facing text says the call was privileged',
       tools['wsl-edit'].output.render({}, rootEdited)[0].text.includes(', as root'),
       tools['wsl-edit'].output.render({}, rootEdited)[0].text)
+
+    // A file a root call CREATES has no previous owner to copy, so it takes the
+    // directory's: handing it to root inside the user's own tree would lock the user
+    // out of a file nobody asked to lock.
+    await rootTools['wsl-write'].execute({ path: `${fsRoot}/root-created.txt`, content: 'made by root\n', asRoot: true }, {})
+    const dirOwner = (await tools.wsl.execute({
+      command: `stat -c %U ${fsRoot}`, description: 'the scratch directory owner',
+    })).stdout.trim()
+    eq('a root create gives the new file the directory owner',
+      (await tools.wsl.execute({
+        command: `stat -c %U ${fsRoot}/root-created.txt`, description: 'the new file owner',
+      })).stdout.trim(),
+      dirOwner)
 
     // The case the switch exists for: a file the user cannot open at all. It has to be
     // refused with the reason rather than returned as an empty file — the header line

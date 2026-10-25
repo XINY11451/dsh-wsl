@@ -310,11 +310,14 @@ Ten things worth knowing:
   in the same directory and is renamed over the target, so an interrupted write leaves the old
   file intact; the old mode is copied first (falling back to `stat -c %a` where `chmod
   --reference` is unavailable, and failing loudly rather than quietly tightening a `755` script),
-  and a write through a symlink changes the link's target instead of replacing the link.
+  and a write through a symlink changes the link's target instead of replacing the link. Only a
+  regular file is replaced: a FIFO, socket or device node is refused (`is not a regular file`)
+  instead of being turned into a text file by the rename.
 - **`edit` is not a regexp.** `oldString` must appear exactly once (or `replaceAll: true`
   must be given), and `$&`, `$1` and backticks in `newString` are literal text. An edit reads
   the file, checks that the bytes it holds match the size the shell reported, and only then
-  writes.
+  writes — a change made by someone else between that read and the write itself is not detected,
+  and the edit's content wins (last writer wins), so edit a file you are not racing.
 - **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
   these add no new power; what they add is that the model does not have to compose a shell
   command, and that the result is structured instead of screen-scraped.
@@ -345,10 +348,18 @@ wsl-grep({ pattern: 'listen\\(', path: '/etc/nginx', include: '*.conf' })
 ```
 
 `pattern` is a regular expression, `path` is a Linux path (default: the session workspace), and
-`include` is **one** positive glob (`*.ts`, `*.{js,jsx}`) — not a list, and negation is not
-supported, because both engines take a single filter and a list would silently search the wrong
-files. Results are capped at 250 matches with 2000 bytes per previewed line; a capped result
-says how many were seen, and `wsl-read` on a matched file gives the surrounding context.
+`include` is **one** positive glob of file NAMES (`*.ts`, `*.{js,jsx}`) — not a list, and negation
+is not supported, because both engines take simple filters and a list would silently search the
+wrong files. `{a,b}` alternation is the one list-like form accepted: it is expanded into one
+simple filter per alternative, which is what the GNU `grep` fallback can actually run (it has no
+brace shorthand, so passing the braces through would match no file at all). A glob with a path
+separator (`sub/*.ts`, `**/*.ts`) is refused with a way forward: `rg --glob` reads it as a path
+glob and `grep --include` looks at the base name only, so the same call would search different
+files — narrow `path` instead. Results are capped at 250 matches with 2000 bytes per previewed
+line; a capped result says how many were seen, and `wsl-read` on a matched file gives the
+surrounding context. A result bigger than the 1 MiB body window is cut and reported as capped
+rather than failing, and a tree where some files could not be read says the result is partial
+instead of presenting what it found as complete.
 
 The engine is whichever the distribution has: `rg` when it is installed (it honours
 `.gitignore`, skips binaries, and reports JSON), and GNU `grep -E` otherwise, which is what
@@ -810,7 +821,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1537 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
+npm test          # 1557 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
