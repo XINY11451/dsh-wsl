@@ -311,13 +311,13 @@ Eight things worth knowing:
 - **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
   these add no new power; what they add is that the model does not have to compose a shell
   command, and that the result is structured instead of screen-scraped.
-- **The UI shows an edit and a write as diffs.** While `wsl-edit` runs, its card shows the
-  replacement you asked for; when it finishes the card is replaced by the hunks that were
-  actually applied, three lines of context wide — the same card, and the same width, as the
-  platform's own `edit`. `wsl-write` has no before-image to diff against, so its card is all
-  additions, which is exactly what the platform's own `write` draws. A replayed edit redraws
-  from the hunks stored with the result, so it does not need the file. The model still reads
-  the one-line summary, not the diff.
+- **An edit and a write are declared as diffs.** While `wsl-edit` runs, its card shows the
+  replacement you asked for; when it finishes that is replaced by the hunks actually applied,
+  three lines of context wide. `wsl-write` has no before-image to diff against, so its card is
+  all additions. Both are declared through `presentCall`/`presentResult` and stored with the
+  result, so a client that reads that metadata can redraw a replayed call without the file; a
+  client that only draws cards for its own built-in tools shows the plain result instead. The
+  model still reads the one-line summary, not the diff.
 - **`asRoot` is how a file you cannot open gets opened.** A file the user has no read
   permission for is refused with `permission denied`, not reported as an empty file; the same
   call with `asRoot: true` — and 管理员模式 on in the panel — runs as root and reads it. An edit
