@@ -598,7 +598,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 1317 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 301 项客户端检查
+npm test          # 1333 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 301 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

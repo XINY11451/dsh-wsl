@@ -5726,6 +5726,25 @@ async function channelUnitTests() {
         request.write(text)
         request.end()
       })
+      // The Enter-insert route a person uses mid-turn: same terminal, different route.
+      const insertOnHistory = (text, extraHeaders = {}) => new Promise((resolve, reject) => {
+        const request = httpRequest({
+          host: '127.0.0.1', port: historyPort, method: 'POST', path: '/insert',
+          headers: {
+            'content-type': 'text/plain',
+            'x-dsh-wsl-token': historyChannel.token,
+            'x-dsh-wsl-session': 'history-session',
+            ...extraHeaders,
+          },
+        }, (response) => {
+          const chunks = []
+          response.on('data', (chunk) => chunks.push(chunk))
+          response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }))
+        })
+        request.on('error', reject)
+        request.write(text)
+        request.end()
+      })
       const lastPromptText = () => calls.filter((entry) => entry[0] === 'prompt').at(-1)?.[1]?.content?.[0]?.text ?? ''
       try {
         const message = '解释一下这个报错'
@@ -5825,6 +5844,69 @@ async function channelUnitTests() {
           !longContext.includes('dsh "'), longContext.slice(-160))
         eq('while the prompt is still just the message', lastPromptText(), `${SAY_PREFIX}${message}`)
         check('and that turn still completes', longSay.body.includes('~e 1'), longSay.body.slice(-90))
+
+        // The Enter-insert route is a person typing at the same terminal: it captures the screen
+        // too, so a message typed mid-turn still reaches the model with its context.
+        historyChannel.consumeTerminalContext('history-session')
+        historyBehavior.screens.clear()
+        historyBehavior.screens.set('user-term', [
+          'xiny@XINY9:~$ git status --short',
+          ' M lib/channel.js',
+          '插入内容（回车发送；空行取消）：先改这个报错',
+        ].join('\r\n'))
+        const inserted = await insertOnHistory('先改这个报错')
+        eq('insert still answers at once', inserted.status, 200)
+        eq('and the inserted text stays the typed text', lastPromptText(), `${SAY_PREFIX}先改这个报错`)
+        const insertContext = contextOf()
+        check('an Enter-insert captures the screen as hidden context',
+          insertContext.includes('【终端历史】') && insertContext.includes('git status --short')
+          && !insertContext.includes('插入内容'), insertContext.slice(0, 260))
+        eq('and the diagnostics name the insert route', historyChannel.historyState().route, 'insert')
+
+        // Short prompts are the common case at a shell ("继续"), and they still capture: two
+        // characters is enough to find the line the person typed.
+        historyChannel.consumeTerminalContext('history-session')
+        historyBehavior.screens.clear()
+        historyBehavior.screens.set('user-term', [
+          'xiny@XINY9:~$ git log --oneline -3',
+          'abc1234 fix: something',
+          '插入内容（回车发送；空行取消）：继续',
+        ].join('\r\n'))
+        await insertOnHistory('继续')
+        check('a two-character insert still captures the screen',
+          contextOf().includes('abc1234 fix: something'), contextOf().slice(0, 220))
+
+        // A tool-invoked insert is not typed at a screen, so it captures nothing and does not
+        // disturb the terminal the person is looking at.
+        historyChannel.consumeTerminalContext('history-session')
+        const listCallsBeforeToolInsert = historyBehavior.calls.userTerminals
+        await insertOnHistory('工具插话', { 'x-dsh-wsl-caller': 'history-session' })
+        eq('a tool-invoked insert captures no context', contextOf(), '')
+        eq('and never asks the transport for a screen',
+          historyBehavior.calls.userTerminals, listCallsBeforeToolInsert)
+
+        // The panel can say which step said no: an attach failure and a screen without the
+        // typed command are different problems and must read differently.
+        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh "${message}"`)
+        await sayOnHistory(message)
+        const okState = historyChannel.historyState()
+        eq('a capture is reported as ok', okState.reason, 'ok')
+        eq('with the route that asked for it', okState.route, 'say')
+        eq('and the terminal it came from', okState.terminalId, 'user-term')
+        eq('and how many terminals it looked at', okState.candidates, 1)
+        eq('a capture waits for the request that will use it', okState.pending, 1)
+        check('and the counters move', okState.attempts >= okState.captured && okState.captured >= 1,
+          JSON.stringify(okState))
+        historyChannel.consumeTerminalContext('history-session')
+        eq('consuming it leaves nothing pending', historyChannel.historyState().pending, 0)
+        historyBehavior.followError = new Error('the attach was refused')
+        await sayOnHistory(message)
+        eq('a refused attach is named as one', historyChannel.historyState().reason, 'attach-failed')
+        historyBehavior.followError = null
+        historyBehavior.screens.set('user-term', 'xiny@XINY9:~$ ls -la\r\ntotal 0\r\n')
+        await sayOnHistory(message)
+        eq('a screen without the typed command is named as no match',
+          historyChannel.historyState().reason, 'no-match')
 
         // A captured screen expires: five minutes later it must not follow an unrelated request.
         historyNow += 5 * 60 * 1000 + 1
