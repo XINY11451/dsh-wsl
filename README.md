@@ -490,7 +490,7 @@ A `dsh "…"` aimed at the very conversation whose tool call is running it canno
 
 While a turn streams, the terminal has no prompt — but it is still yours: press Enter once and the answer is held back (the live clock stops painting, the input line is clean), type the message, press Enter again and it is delivered to the same conversation as a steer, after which the answer resumes (`已插入当前对话，继续输出`). A second empty Enter cancels. Set `DSH_WSL_NO_STEER=1` to turn that reader off (scripts and pipes never get it; only a real terminal does).
 
-A terminal prompt also carries what you were just looking at: the Host asks the page's terminal bridge for a **read-only snapshot of the terminal the command was typed in** (found by the command line itself), and prefixes the conversation message with the newest hundred lines of that screen, framed as 【终端历史】. That is the fast copy; when the model needs more it reads the same terminal again with this plugin's own terminal tool (the block names the terminal id), so there is no extra command to learn. It is best effort and bounded — no open DSH window, no matching terminal, or a slow attach simply means no snapshot, and the turn is never delayed by more than ~3 s. A prompt that came from a tool call gets no snapshot: nobody typed it at a screen.
+A terminal prompt does **not** paste its screen into the conversation. It names the terminal it came from in one short line (the Host asks the page's terminal bridge which sidebar terminal is running that command, then appends `（终端历史：… id=<terminal-id>）`), and the model reads that terminal itself with this plugin's own terminal tool (`wsl-term read`, read-only) when the question actually needs the earlier commands or output. Identification is best effort and bounded — no open DSH window, no matching terminal, or a slow attach simply means no line, and the turn is never delayed by more than ~3 s. A prompt that came from a tool call gets no line: nobody typed it at a screen.
 
 Set it up once in the panel: turn on **启用 dsh 命令** and click **安装 dsh 命令** — the default landing is the most recently active conversation — the one you are looking at (pick another from the list, or create one right there, if you want a different landing); the shim lands in `~/.local/bin/dsh`. After that the plugin keeps it healthy by itself: on every start (and settings change) it reads the installed shim and, when it is missing or older than the running version, installs it again without asking — the check costs one `cat`, it never touches the distro while the channel is off or while a turn is streaming, and `autoInstallShim: false` in the plugin config turns it off. The plugin binds a small HTTP
 server to the address WSL uses as its default gateway, on a random port, and demands
@@ -691,7 +691,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1298 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
+npm test          # 1296 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

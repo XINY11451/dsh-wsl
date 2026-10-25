@@ -5728,6 +5728,7 @@ async function channelUnitTests() {
       const lastPromptText = () => calls.filter((entry) => entry[0] === 'prompt').at(-1)?.[1]?.content?.[0]?.text ?? ''
       try {
         const message = '解释一下这个报错'
+        const expectedHint = (id) => `（终端历史：如需这个终端之前的命令与输出，可调用 wsl-term 的 read 动作，id=${id}）`
         const screen = [
           'xiny@XINY9:~$ git status --short',
           ' M lib/tools/wsl.js',
@@ -5736,24 +5737,24 @@ async function channelUnitTests() {
           `xiny@XINY9:~$ dsh "${message}"`,
         ].join('\r\n')
         historyBehavior.screens.set('user-term', screen)
-        const withHistory = await sayOnHistory(message)
+        const withHint = await sayOnHistory(message)
         const promptText = lastPromptText()
-        check('a terminal prompt carries the screen history block',
-          promptText.includes('【终端历史】') && promptText.includes('【终端历史结束】'), promptText.slice(0, 200))
-        check('and it carries the commands that were already on the screen',
-          promptText.includes('git status --short') && promptText.includes('abc1234 fix: something'),
-          promptText.slice(0, 420))
-        check('while the original terminal message still follows the history',
-          promptText.endsWith(`${SAY_PREFIX}${message}`)
-          && promptText.indexOf('【终端历史结束】') < promptText.indexOf(`${SAY_PREFIX}${message}`),
-          promptText.slice(-200))
-        {
-          const block = promptText.slice(promptText.indexOf('【终端历史】'), promptText.indexOf('【终端历史结束】'))
-          check('the echoed dsh command line itself is not repeated inside the history',
-            block.length > 0 && !block.includes(message) && !block.includes(`dsh "${message}"`),
-            block.slice(-200))
-        }
-        check('and the turn still completes', withHistory.body.includes('~e 1'), withHistory.body.slice(-90))
+        // The prompt carries ONE line pointing at the terminal; the screen itself stays out of
+        // the conversation (the model decides whether to read it with `wsl-term read`).
+        eq('a matched terminal adds exactly one hint line',
+          promptText, `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
+        check('the hint names the tool and the terminal id',
+          promptText.includes('wsl-term') && promptText.includes('id=user-term'), promptText)
+        check('no screen content is pasted into the conversation',
+          !promptText.includes('git status --short') && !promptText.includes('abc1234 fix: something')
+          && !promptText.includes('【终端历史'), promptText.slice(-260))
+        check('and the turn still completes', withHint.body.includes('~e 1'), withHint.body.slice(-90))
+
+        // Consecutive prompts on the same terminal each get the hint: the terminal is identified
+        // freshly every time (no per-session cache — one conversation can have several terminals).
+        await sayOnHistory(message)
+        eq('a second prompt on the same terminal carries the same hint',
+          lastPromptText(), `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
 
         // No transport at all (a build without one): exactly the old prompt shape.
         await call('POST', '/say', message, {
@@ -5788,9 +5789,7 @@ async function channelUnitTests() {
         eq('a tool-invoked prompt is not given screen history', lastPromptText(), `${SAY_PREFIX}${message}`)
         eq('and the transport is not even consulted for it', historyBehavior.calls.userTerminals, readsBefore)
 
-        // The default history is 100 lines now (it used to be 60): a long screen keeps its
-        // NEWEST lines, drops the oldest, and cuts at the start of the echoed command's line so
-        // no half-typed `$ dsh "…"` reaches the conversation.
+        // A long screen changes nothing at the prompt: the body never travels, only the hint.
         const longScreen = [
           ...Array.from({ length: 150 }, (_, index) => `out-${String(index + 1).padStart(3, '0')} ${'x'.repeat(20)}`),
           `xiny@XINY9:~$ dsh "${message}"`,
@@ -5798,26 +5797,11 @@ async function channelUnitTests() {
         historyBehavior.screens.clear()
         historyBehavior.screens.set('user-term', longScreen)
         const longSay = await sayOnHistory(message)
-        const longPrompt = lastPromptText()
-        /** The text between the header line and the closing marker, trailing newline removed. */
-        const historyBodyOf = (text) => {
-          const at = text.indexOf('【终端历史】')
-          const end = text.indexOf('【终端历史结束】')
-          if (at < 0 || end < 0) return ''
-          const firstBreak = text.indexOf('\n', at)
-          if (firstBreak < 0 || firstBreak > end) return ''
-          return text.slice(firstBreak + 1, end).replace(/\n+$/, '')
-        }
-        const longBody = historyBodyOf(longPrompt)
-        const longLines = longBody === '' ? [] : longBody.split('\n')
-        eq('a long screen keeps exactly the newest 100 lines', longLines.length, 100)
-        check('and the newest line is kept while the oldest is dropped',
-          longBody.includes('out-150') && !longBody.includes('out-001'), longBody.slice(0, 140))
-        check('the history hint tells the model where to read more',
-          longPrompt.includes('wsl-term') && longPrompt.includes('id=user-term'),
-          longPrompt.slice(0, 300))
-        check('the cut happens at the echoed command\'s line start',
-          !longBody.includes('dsh "') && !longBody.includes(message), longBody.slice(-160))
+        eq('a 150-line screen still adds only the one-line hint',
+          lastPromptText(), `${SAY_PREFIX}${message}\n\n${expectedHint('user-term')}`)
+        check('and no screen line reaches the conversation',
+          !lastPromptText().includes('out-001') && !lastPromptText().includes('out-150'),
+          lastPromptText().slice(-200))
         check('and that turn still completes', longSay.body.includes('~e 1'), longSay.body.slice(-90))
       } finally {
         await historyChannel.stop()
