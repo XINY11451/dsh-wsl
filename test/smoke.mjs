@@ -3873,23 +3873,45 @@ async function toolTests(tools, shim) {
   const samplePath = `${fsRoot}/sample.txt`
   const sampleText = '第一行：中文\nsecond "quoted" line\n$HOME and `ticks`\nno trailing newline'
   try {
+    // `read` answers with numbered lines, exactly as the host's own `read` does: the number
+    // is what a follow-up edit or a citation needs, the text is what the model reasons
+    // about. This helper turns a window back into the raw text, so the assertions below can
+    // talk about the file instead of about the envelope.
+    const readText = (value) => value.lines.map((line) => line.text).join('\n')
+
     const created = await tools['wsl-write'].execute({ path: samplePath, content: sampleText }, {})
-    check('write reports a file it created', created.created === true, JSON.stringify(created))
-    eq('write reports the bytes it wrote', created.sizeBytes, Buffer.byteLength(sampleText))
-    eq('write resolves the path to one absolute location', created.resolvedPath, samplePath)
+    eq('a write to a path that was not there reports a create', created.operation, 'create')
+    eq('the write result carries the content it wrote', created.after, sampleText)
+    eq('a created file has no old side', created.before, null)
+    eq('write resolves the path to one absolute location', created.path, samplePath)
+    {
+      const rendered = tools['wsl-write'].output.render({}, created)[0].text
+      check('write renders the host acknowledgement a model already knows',
+        rendered.startsWith(`<path>${samplePath}</path>`) && rendered.includes('Created file'), rendered)
+    }
 
     const whole = await tools['wsl-read'].execute({ path: samplePath }, {})
-    eq('read returns the exact bytes, adding no line numbers', whole.content, sampleText)
+    eq('read returns the exact text, unnumbered', readText(whole), sampleText)
     eq('read counts an unterminated last line', whole.totalLines, 4)
-    check('read renders a range header the model can cite',
-      tools['wsl-read'].output.render({}, whole)[0].text.startsWith(`${samplePath}  [lines 1-4 of 4`),
-      tools['wsl-read'].output.render({}, whole)[0].text.slice(0, 64))
+    eq('read numbers its lines from 1', whole.lines[0].number, 1)
+    {
+      const rendered = tools['wsl-read'].output.render({}, whole)[0].text
+      check('read renders the host envelope, so the model reads one format',
+        rendered.startsWith(`<path>${samplePath}</path>`), rendered.slice(0, 120))
+      check('and numbers every line inside it', rendered.includes('1: 第一行：中文'), rendered.slice(0, 200))
+      check('and closes with the end-of-file footer', rendered.includes('(End of file - total 4 lines)'), rendered.slice(-80))
+    }
 
     const sliced = await tools['wsl-read'].execute({ path: samplePath, offset: 2, limit: 2 }, {})
-    eq('offset/limit slice by line', sliced.content, 'second "quoted" line\n$HOME and `ticks`\n')
-    eq('the slice reports where it started', sliced.startLine, 2)
-    eq('the slice reports how many lines it holds', sliced.lineCount, 2)
-    eq('the whole file is not re-sent for a slice', sliced.sizeBytes, Buffer.byteLength(sampleText))
+    eq('offset/limit slice by line', readText(sliced), 'second "quoted" line\n$HOME and `ticks`')
+    eq('the slice reports where it started', sliced.offset, 2)
+    eq('the slice reports how many lines it holds', sliced.lines.length, 2)
+    eq('and still knows the file is longer than the window', sliced.totalLines, 4)
+    {
+      const rendered = tools['wsl-read'].output.render({ offset: 2, limit: 2 }, sliced)[0].text
+      check('a windowed read says where to continue next',
+        rendered.includes('(Showing lines 2-3 of 4. Use offset=4 to continue.)'), rendered.slice(-120))
+    }
 
     // A directory, a missing path and a binary file are the three ways "read this file"
     // means something else. Each has its own message, because "failed" is not a diagnosis.
@@ -3915,7 +3937,7 @@ async function toolTests(tools, shim) {
       (await tools.wsl.execute({ command: `stat -c %a ${samplePath}`, description: 'read the mode back' })).stdout.trim(),
       '755')
     eq('edit wrote exactly the replacement',
-      (await tools['wsl-read'].execute({ path: samplePath }, {})).content,
+      readText(await tools['wsl-read'].execute({ path: samplePath }, {})),
       sampleText.replace('second "quoted" line', 'SECOND line'))
 
     // `$&`, `$1` and a backtick are literal text here: the replacement is not a shell
@@ -3925,7 +3947,7 @@ async function toolTests(tools, shim) {
     }, {})
     eq('a replacement full of metacharacters is inserted literally', literal.replacements, 1)
     check('the metacharacters survived',
-      (await tools['wsl-read'].execute({ path: samplePath }, {})).content.includes('cost: $& $1 `x`'))
+      readText(await tools['wsl-read'].execute({ path: samplePath }, {})).includes('cost: $& $1 `x`'))
 
     await rejects('an ambiguous match is refused rather than guessed',
       () => tools['wsl-edit'].execute({ path: samplePath, oldString: 'a', newString: 'b' }, {}),
@@ -3993,19 +4015,19 @@ async function toolTests(tools, shim) {
     const nested = await tools['wsl-write'].execute({
       path: '~/dsh-fs-smoke/深 层/文件.txt', content: 'tilde ok',
     }, {})
-    check('write expands `~` to the home directory', /^\/home\/[^/]+\/dsh-fs-smoke\/深 层\/文件\.txt$/.test(nested.resolvedPath), nested.resolvedPath)
-    check('write creates the missing parent directories', nested.created === true, JSON.stringify(nested))
-    eq('the nested file reads back', (await tools['wsl-read'].execute({ path: nested.resolvedPath }, {})).content, 'tilde ok')
+    check('write expands `~` to the home directory', /^\/home\/[^/]+\/dsh-fs-smoke\/深 层\/文件\.txt$/.test(nested.path), nested.path)
+    eq('write creates the missing parent directories', nested.operation, 'create')
+    eq('the nested file reads back', readText(await tools['wsl-read'].execute({ path: nested.path }, {})), 'tilde ok')
 
     const replaced = await tools['wsl-write'].execute({ path: samplePath, content: 'replaced\n' }, {})
-    check('write reports replacing an existing file', replaced.created === false, JSON.stringify(replaced))
+    eq('a write over an existing file reports an update', replaced.operation, 'update')
     eq('the replacement content is what was written',
-      (await tools['wsl-read'].execute({ path: samplePath }, {})).content, 'replaced\n')
+      readText(await tools['wsl-read'].execute({ path: samplePath }, {})), 'replaced')
 
     const emptied = await tools['wsl-write'].execute({ path: `${fsRoot}/empty.txt`, content: '' }, {})
-    eq('writing empty content reports zero bytes', emptied.sizeBytes, 0)
+    eq('writing empty content carries an empty body', emptied.after, '')
     eq('an empty file reads as empty rather than as an error',
-      (await tools['wsl-read'].execute({ path: `${fsRoot}/empty.txt` }, {})).content, '')
+      readText(await tools['wsl-read'].execute({ path: `${fsRoot}/empty.txt` }, {})), '')
 
     // Searching is the fourth file operation, and the only one whose answer depends on
     // what the distribution has installed. Both engines are asked for the same things,
@@ -4085,7 +4107,7 @@ async function toolTests(tools, shim) {
       (await tools.wsl.execute({ command: `stat -c '%U %a' ${ownedPath}`, description: 'owner after the edit' })).stdout.trim(),
       ownerBefore)
     eq('and the change itself landed',
-      (await tools['wsl-read'].execute({ path: ownedPath }, {})).content, 'alpha\ngamma\n')
+      readText(await tools['wsl-read'].execute({ path: ownedPath }, {})), 'alpha\ngamma')
     check('the model-facing text says the call was privileged',
       tools['wsl-edit'].output.render({}, rootEdited)[0].text.includes(', as root'),
       tools['wsl-edit'].output.render({}, rootEdited)[0].text)
@@ -4103,7 +4125,7 @@ async function toolTests(tools, shim) {
     await rejects('an unreadable file is refused with the reason, not as an empty file',
       () => tools['wsl-read'].execute({ path: lockedPath }, {}), /permission denied/)
     eq('the same read as root returns the contents',
-      (await rootTools['wsl-read'].execute({ path: lockedPath, asRoot: true }, {})).content, 'secret\n')
+      readText(await rootTools['wsl-read'].execute({ path: lockedPath, asRoot: true }, {})), 'secret')
     await rejects('an edit of an unreadable file says it could not read it',
       () => tools['wsl-edit'].execute({ path: lockedPath, oldString: 'secret', newString: 'x' }, {}),
       /permission denied/)

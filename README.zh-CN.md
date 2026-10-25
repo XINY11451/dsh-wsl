@@ -232,6 +232,13 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
 
 有几点要知道：
 
+- **`read` 和 `write` 的回答沿用平台自己的格式。** `wsl-read` 返回
+  `<path>/<type>/<content>` 信封，行号在前，结尾是平台 `read` 那句 `(End of file - total N
+  lines)` 或 `(Showing lines a-b of N. Use offset=c to continue.)`；`wsl-write` 返回它的
+  `Created file` / `Updated file` 回执。模型学会一种格式，两种世界都读得懂。**参数名**保持本插件
+  的 camelCase（`path`、`oldString`），并不改成平台的 `file_path`/`old_string`——只有"回答"跟平台
+  对齐。`wsl-edit` 保留自己那行摘要 `path  [2 replacements, 1.2 KB → 1.2 KB]`：替换这件事，
+  值得知道的就是"改了几处"和"文件变成了多大"。
 - **只处理文本，而且会明说。** 二进制文件、或不是合法 UTF-8 的文件会被**拒绝**并给出原因，而不是把乱码
   当内容返回。这类事情交给 `wsl`（`base64`、`od`、`cp`），它也是这三个工具覆盖不到时的出口。
 - **写入是原子的，而且保留权限。** 内容先写进同目录的临时文件，再改名覆盖目标，所以写到一半中断也不会

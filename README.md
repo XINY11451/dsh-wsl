@@ -281,8 +281,17 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
                                                                → exactly one match, or it refuses
 ```
 
-Six things worth knowing:
+Seven things worth knowing:
 
+- **`read` and `write` answer in the host's own words.** `wsl-read` returns the
+  `<path>/<type>/<content>` envelope with numbered lines and the same `(End of file - total N
+  lines)` and `(Showing lines a-b of N. Use offset=c to continue.)` footers as the platform's
+  own `read`; `wsl-write` returns its `Created file` / `Updated file` acknowledgement. A model
+  that has learned one format reads both without a second instruction. The **parameters** keep
+  this plugin's camelCase (`path`, `oldString`) rather than the host's `file_path`/`old_string` —
+  only the answer follows the host's shape. `wsl-edit` keeps its own one-line summary,
+  `path  [2 replacements, 1.2 KB → 1.2 KB]`, because for a replacement the count and the size
+  change are the two facts worth reporting.
 - **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
   with a message instead of being returned as mojibake. The workaround is the `wsl` tool
   (`base64`, `od`, `cp`), which is also what to use for anything these three do not cover.
