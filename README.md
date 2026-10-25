@@ -281,7 +281,7 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
                                                                → exactly one match, or it refuses
 ```
 
-Eight things worth knowing:
+Ten things worth knowing:
 
 - **`read` and `write` answer in the host's own words.** `wsl-read` returns the
   `<path>/<type>/<content>` envelope with numbered lines and the same `(End of file - total N
@@ -292,37 +292,46 @@ Eight things worth knowing:
   only the answer follows the host's shape. `wsl-edit` keeps its own one-line summary,
   `path  [2 replacements, 1.2 KB → 1.2 KB]`, because for a replacement the count and the size
   change are the two facts worth reporting.
-- **A read is a card in the UI, not a wall of framed text.** The same window reaches the
-  interface as the platform's own `read` card — numbered lines, the file's total, and a language
-  hint taken from the extension (`python`, `typescript`, …) so it can be syntax-highlighted. The
-  card is rebuilt from the window stored with the result, so a replayed read redraws without
-  touching the distribution again; a UI without the read capability falls back to the same lines
-  without the envelope tags.
+- **A read declares a card for UIs that draw one.** The host's presentation vocabulary is
+  declared with the result (numbered lines, the file's total, and a language hint taken from the
+  extension — `python`, `typescript`, …), and stored with the result, so a client that renders
+  it can redraw a replayed read without touching the distribution again. Whether a card is drawn
+  is the client's decision: the bundled Web UI currently shows the plain numbered result, because
+  its tool cards are client plugins keyed by their own tool names. What the model reads is the
+  envelope above either way.
 - **Text only, and loud about it.** A binary file, or one that is not valid UTF-8, is refused
   with a message instead of being returned as mojibake. The workaround is the `wsl` tool
   (`base64`, `od`, `cp`), which is also what to use for anything these three do not cover.
-- **A write is atomic and keeps the mode.** Content goes to a temporary file in the same
-  directory and is renamed over the target, so an interrupted write leaves the old file
-  intact; the old mode is copied first, so a `755` script stays executable.
+- **A line longer than the read window is refused, not paged forever.** `wsl-read` returns up to
+  1 MiB per call and a window is line-based, so a single line over that budget (minified JSON, a
+  bundled script) cannot be paged: the call says so and points at the `wsl` tool (`head -c`,
+  `fold`, `cut`) instead of answering `Showing lines 1-0` for the rest of the session.
+- **A write is atomic, keeps the mode, and follows symlinks.** Content goes to a temporary file
+  in the same directory and is renamed over the target, so an interrupted write leaves the old
+  file intact; the old mode is copied first (falling back to `stat -c %a` where `chmod
+  --reference` is unavailable, and failing loudly rather than quietly tightening a `755` script),
+  and a write through a symlink changes the link's target instead of replacing the link.
 - **`edit` is not a regexp.** `oldString` must appear exactly once (or `replaceAll: true`
   must be given), and `$&`, `$1` and backticks in `newString` are literal text. An edit reads
-  the file, checks that the bytes it holds match the size the shell reported — which is also
-  how a file that changed mid-read is caught — and only then writes.
+  the file, checks that the bytes it holds match the size the shell reported, and only then
+  writes.
 - **These are conveniences, not a sandbox.** `wsl` can already write any file you can, so
   these add no new power; what they add is that the model does not have to compose a shell
   command, and that the result is structured instead of screen-scraped.
-- **An edit and a write are declared as diffs.** While `wsl-edit` runs, its card shows the
-  replacement you asked for; when it finishes that is replaced by the hunks actually applied,
-  three lines of context wide. `wsl-write` has no before-image to diff against, so its card is
-  all additions. Both are declared through `presentCall`/`presentResult` and stored with the
-  result, so a client that reads that metadata can redraw a replayed call without the file; a
-  client that only draws cards for its own built-in tools shows the plain result instead. The
-  model still reads the one-line summary, not the diff.
+- **An edit and a write declare diffs.** An edit declares the replacement you asked for while it
+  runs, then the hunks actually applied, three lines of context wide; a write has no before-image,
+  so its declaration is all additions. Both are declared through `presentCall`/`presentResult` and
+  stored with the result, so a client that reads that metadata can redraw a replayed call without
+  the file. A UI that only draws cards for its own built-in tools — the bundled Web UI included —
+  shows the plain result instead. The model still reads the one-line summary, not the diff.
 - **`asRoot` is how a file you cannot open gets opened.** A file the user has no read
   permission for is refused with `permission denied`, not reported as an empty file; the same
   call with `asRoot: true` — and 管理员模式 on in the panel — runs as root and reads it. An edit
   as root copies the old owner onto the new file, so editing someone else's file does not
   silently hand it to root.
+- **The four tools have panel switches, on by default.** `wsl-read`, `wsl-write`, `wsl-edit` and
+  `wsl-grep` can each be turned off in the plugin panel like the older tools; the switch is live
+  and takes the tool away without a restart.
 
 ### `wsl-grep`
 
@@ -346,9 +355,11 @@ The engine is whichever the distribution has: `rg` when it is installed (it hono
 Ubuntu images ship. That difference is visible in two places, and worth knowing before you
 write a pattern:
 
-- **Dialect.** `rg` accepts `\d`, `\w` and `\b`; `grep -E` does not. A pattern using them works
-  on one engine and finds nothing on the other, so the safe subset is the one both understand.
-  A pattern that neither can compile is reported as a search failure, not as "no matches".
+- **Dialect.** `\d` is the one shared escape GNU `grep -E` reads differently — as a literal `d`
+  — so the fallback translates it to `[0-9]` (and `\D` to `[^0-9]`) before searching; `\w`,
+  `\s` and `\b` are GNU extensions that mean the same in both engines. Anything only ripgrep
+  understands (lookaround, backreferences) makes `grep` exit with an error, which is reported
+  as a search failure rather than as "no matches".
 - **Ignore rules.** `rg` skips what `.gitignore` excludes and `grep` does not, so the same
   search can return different sets of files on two machines. Install `ripgrep`
   (`wsl-bootstrap` will do it) when that difference matters.
@@ -799,7 +810,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1339 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
+npm test          # 1537 host checks against real WSL (shim for ctx.subprocess) + 301 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
