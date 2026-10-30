@@ -367,7 +367,7 @@ wsl-grep({ pattern: 'PasswordAuthentication', path: '/etc/ssh', asRoot: true })
 宿主上会明确报告「无法驱动终端」，而不是伸手进你的 shell。其余五个工具只是普通的 subprocess
 调用，在老宿主上仍然能跑，但包本身不再作出那个支持承诺。
 
-已在 DSH **0.2.1-rc.2** 上验证：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
+已在 DSH **0.2.1-rc.5** 上验证（更早的 0.2.1-rc.3 同样验证过）：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
 subprocess 接缝是跑在**真实 provider** 上而非替身；后台任务路径跑在**真实 job 注册表**上，
 包含「会话 id 属主围栏」（0.2.1 的 job id 是 `kind-<16 hex>`，所以检查读注册表给的那个 id，
 而不是假定形状）。这套检查就是 `test/real-seam.mjs`，约一分钟即可重验一个新宿主——升级后把它

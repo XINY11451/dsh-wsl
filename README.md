@@ -458,7 +458,7 @@ on those hosts instead of reaching into the user's shell. The other five tools a
 plain subprocess calls and still run there, but the package itself does not claim
 that support.
 
-Verified against DSH **0.2.1-rc.2**: the tool schemas pass DSH's own
+Verified against DSH **0.2.1-rc.5** (and 0.2.1-rc.3 before it): the tool schemas pass DSH's own
 `assertSupportedJsonSchema`, the subprocess seam is exercised against the real
 provider rather than a shim, and the background-job path is checked against the
 real job registry, including the session-id ownership fence (0.2.1 hands out
