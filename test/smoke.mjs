@@ -5111,7 +5111,7 @@ async function bridgeUnitTests() {
   // moment that command exits, corrupting the user's shell.
   {
     const host = makeBridgeHarness({ terminals: [browserTerminalOf('user-term')] })
-    const page = makeBridgePage(host, { screen: 'xiny@XINY9:/home$ dsh "问题"\r\n⏱ 思考中… 2.1s' })
+    const page = makeBridgePage(host, { screen: 'xiny@XINY9:/home$ dsh -- "问题"\r\n⏱ 思考中… 2.1s' })
     const warm = page.poll()
     await tickMs(5)
     const tool = createWslTermTool({ ctx: host.ctx, config: CONFIG, transport: host.transport })
@@ -6319,6 +6319,22 @@ async function channelUnitTests() {
       !shim.includes('cmd_insert') && !shim.includes('cmd_screen')
       && !shim.includes('dsh insert "') && !shim.includes('dsh screen [-n'),
       shim.slice(0, 900))
+    // A message only leaves the terminal when it is marked as one (`dsh -- …`, or
+    // `dsh <会话id> -- …`). Everything else is a command, so a typo answers "不存在此命令"
+    // instead of being sent to the model — and the marker has to be `--`, because the shell
+    // strips quoting before the shim sees its arguments.
+    check('a message needs the -- marker',
+      shim.includes('if [ "$1" = "--" ]') && shim.includes('cmd_say "$(current_session)" "$*"')
+      && shim.includes('if [ "${2:-}" = "--" ]') && shim.includes('cmd_say "$target" "$*"'),
+      shim.slice(-1400))
+    check('a bare first word is a command, and an unknown one is a clear error',
+      shim.includes('不存在此命令：$1') && shim.includes('dsh -- \\"问题\\"')
+      && /list\|ls\|new\|rm\|archive\|status\)\s*:/.test(shim),
+      shim.slice(-1200))
+    check('the usage text teaches the marker',
+      shim.includes('dsh -- "问题"') && shim.includes('dsh <会话id> -- "问题"')
+      && shim.includes('只有 -- 后面的内容会当消息发出去'),
+      shim.slice(0, 1200))
     // A turn in flight holds the terminal, but not the person: one Enter holds the answer back
     // so the compose line is typed on a quiet terminal, the second delivers it as an insert.
     // Pipes and tool shells must never be read from, and the switch lets a person turn the
@@ -6512,7 +6528,7 @@ async function channelUnitTests() {
           ' M lib/tools/wsl.js',
           'xiny@XINY9:~$ git log --oneline -3',
           'abc1234 fix: something',
-          `xiny@XINY9:~$ dsh "${message}"`,
+          `xiny@XINY9:~$ dsh -- "${message}"`,
         ].join('\r\n')
         historyBehavior.screens.set('user-term', screen)
         const withContext = await sayOnHistory(message)
@@ -6561,7 +6577,7 @@ async function channelUnitTests() {
         // A failing terminal list / attach is silent context loss, never a failed prompt.
         historyChannel.consumeTerminalContext('history-session')
         historyBehavior.screens.clear()
-        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh "${message}"`)
+        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh -- "${message}"`)
         historyBehavior.userTerminalsError = new Error('no page is polling')
         const failingList = await sayOnHistory(message)
         eq('a failing terminal list still sends the prompt unchanged', lastPromptText(), `${SAY_PREFIX}${message}`)
@@ -6585,7 +6601,7 @@ async function channelUnitTests() {
         // A long screen is bounded: the newest 100 lines, cut at the echoed command's line start.
         const longScreen = [
           ...Array.from({ length: 150 }, (_, index) => `out-${String(index + 1).padStart(3, '0')} ${'x'.repeat(20)}`),
-          `xiny@XINY9:~$ dsh "${message}"`,
+          `xiny@XINY9:~$ dsh -- "${message}"`,
         ].join('\n')
         historyBehavior.screens.clear()
         historyBehavior.screens.set('user-term', longScreen)
@@ -6596,7 +6612,7 @@ async function channelUnitTests() {
         eq('and exactly 100 screen lines travel',
           (longContext.match(/^out-\d{3} /gm) ?? []).length, 100)
         check('the echoed dsh command line is not part of the context',
-          !longContext.includes('dsh "'), longContext.slice(-160))
+          !longContext.includes('dsh -- "'), longContext.slice(-160))
         eq('while the prompt is still just the message', lastPromptText(), `${SAY_PREFIX}${message}`)
         check('and that turn still completes', longSay.body.includes('~e 1'), longSay.body.slice(-90))
 
@@ -6642,7 +6658,7 @@ async function channelUnitTests() {
 
         // The panel can say which step said no: an attach failure and a screen without the
         // typed command are different problems and must read differently.
-        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh "${message}"`)
+        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ dsh -- "${message}"`)
         await sayOnHistory(message)
         const okState = historyChannel.historyState()
         eq('a capture is reported as ok', okState.reason, 'ok')
@@ -6668,7 +6684,7 @@ async function channelUnitTests() {
         // first assembly emptied the provider before the request that needed it (live bug,
         // 2026-10-25: capture ok, `pending` 0, no history in the request).
         historyChannel.consumeTerminalContext('history-session')
-        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ git status --short\r\ndsh "${message}"`)
+        historyBehavior.screens.set('user-term', `xiny@XINY9:~$ git status --short\r\ndsh -- "${message}"`)
         await sayOnHistory(message)
         eq('a fresh capture starts unserved', historyChannel.historyState().served, false)
         eq('the first assembly marks it served instead of dropping it',

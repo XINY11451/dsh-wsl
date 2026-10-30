@@ -37,19 +37,22 @@ die() { printf 'dsh: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 用法：
-  dsh "问题"                把问题发给当前会话，流式显示思考与回复
-  dsh <会话id> "问题"       发给指定会话
+  dsh -- "问题"             把问题发给当前会话，流式显示思考与回复
+  dsh <会话id> -- "问题"    发给指定会话
   dsh list                  列出会话（* 表示当前）
   dsh new <会话id>          新建会话并设为当前
   dsh use <会话id>          切换当前会话
   dsh rm <会话id>           归档会话（可恢复）
   dsh status                当前会话与通道状态
 
+只有 -- 后面的内容会当消息发出去；第一个词不是上面的命令、又没有 -- 时，会直接报
+「不存在此命令」，不会把打错的命令当成问题发给模型。-- 后面不需要再加引号，也可以
+不加（dsh -- 帮我看看 与 dsh -- "帮我看看" 等价）；带空格的内容建议保留引号。
 说明：回复来自 DSH 客户端里的同一段对话；在终端按 Ctrl+C 会停止等待，并且
 客户端里那一轮也会一起中止。等待回复期间终端仍可输入：先按一次回车暂停输出，
 敲完内容再回车就插入当前对话（等同往正在进行的回合里插话），随后继续输出；
-第二次回车留空则取消插入。设 DSH_WSL_NO_STEER=1 可关掉这个输入。`dsh "…"` 若
-目标正是正在等待这条命令的会话会自锁，此时会直接报「无法执行」并说明原因，
+第二次回车留空则取消插入。设 DSH_WSL_NO_STEER=1 可关掉这个输入。`dsh -- "…"`
+若目标正是正在等待这条命令的会话会自锁，此时会直接报「无法执行」并说明原因，
 等这一轮结束或在客户端里输入即可。当前会话按终端分别保存：两个终端互不影响。
 EOF
 }
@@ -573,7 +576,7 @@ cmd_say() {
   trap 'stop_reason; cleanup_balance; cleanup_say' EXIT
   # While a turn streams the terminal has no prompt. Pressing Enter there holds the answer back
   # and the next line goes into the conversation as a steer (the same `/insert` route the old
-  # `dsh insert` command used), so a running `dsh "…"` can be talked into without a second window.
+  # `dsh insert` command used), so a running `dsh -- "…"` can be talked into without a second window.
   # Only a real terminal gets this: a pipe or a tool shell must not have its stdin read out from
   # under the command that owns it.
   start_steer_reader() {
@@ -794,7 +797,32 @@ case "$1" in
   use) cmd_use "${2:-}"; exit 0 ;;
 esac
 
-load_channel
+# A message only leaves the terminal when it is marked as one: `dsh -- …` (current session) or
+# `dsh <会话id> -- …` (named session). Everything else is a COMMAND, so a typo answers "no such
+# command" instead of being sent to the model as a prompt — the shell strips quoting before this
+# script ever sees it, which is why the marker is `--` and not "was it quoted".
+if [ "$1" = "--" ]; then
+  shift
+  [ $# -gt 0 ] || die "用法：dsh -- <问题>（也可以写成 dsh -- \"问题\"）"
+  load_channel || exit 1
+  cmd_say "$(current_session)" "$*"
+  exit 0
+fi
+if [ "${2:-}" = "--" ]; then
+  target=$1
+  shift 2
+  [ $# -gt 0 ] || die "用法：dsh <会话id> -- <问题>"
+  load_channel || exit 1
+  cmd_say "$target" "$*"
+  exit 0
+fi
+
+case "$1" in
+  list|ls|new|rm|archive|status) : ;;
+  *) die "不存在此命令：$1（输入 dsh help 查看用法；发消息请用 dsh -- \"问题\"）" ;;
+esac
+
+load_channel || exit 1
 
 case "$1" in
   list|ls) cmd_list; exit 0 ;;
@@ -802,11 +830,3 @@ case "$1" in
   rm|archive) cmd_rm "${2:-}"; exit 0 ;;
   status) cmd_status; exit 0 ;;
 esac
-
-# A bare first word that names no command is either a session id (two or more args) or
-# the prompt itself. `dsh "问题"` uses the current session; `dsh <id> "问题"` is explicit.
-if [ $# -ge 2 ]; then
-  cmd_say "$1" "${*:2}"
-else
-  cmd_say "$(current_session)" "$1"
-fi

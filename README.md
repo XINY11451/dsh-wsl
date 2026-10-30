@@ -593,7 +593,7 @@ choose rather than a fixed large value. Same write rules and the same next-start
 The desktop app can be reached from a WSL prompt:
 
 ```sh
-dsh "帮我把 nemu 的编译错误修掉"
+dsh -- "帮我把 nemu 的编译错误修掉"
 ```
 
 The text goes into the DSH conversation the panel designates — the client shows the
@@ -609,17 +609,19 @@ same agent reacts immediately and nothing is dropped.
 
 | command | does |
 |---|---|
-| `dsh "问题"` | send to the current session and stream the reply |
-| `dsh <id> "问题"` | send to that session |
+| `dsh -- "问题"` | send to the current session and stream the reply (`--` marks a message; unquoted words after it work too) |
+| `dsh <id> -- "问题"` | send to that session |
 | `dsh list` | sessions, newest first; `*` marks the current one |
 | `dsh new <id>` | create a session (it appears in the client) and switch to it |
 | `dsh use <id>` | switch the current session |
 | `dsh rm <id>` | archive a session — the client's own reversible remove |
 | `dsh status` | current session and channel state |
 
+A message needs the `--` marker; a bare first word is read as a **command**, so a typo such as `dsh statsu` exits with `不存在此命令` (no such command) and the usage hint instead of being sent to the model. That is why the marker exists: the shell removes quotes before the shim runs, so "was it quoted" cannot be answered — `--` can.
+
 Messages typed in the terminal arrive in the conversation marked **【WSL 终端】**, so a terminal turn is never mistaken for something typed in the client, and the ⏱ thinking clock keeps ticking while the model works instead of freezing at its first number — it reads in minutes and seconds (`0分05秒`, then `1分23秒`). The shim resolves its transport once per channel start (it used to probe the blocked path on every command), and from the moment the Host accepts the request it shows a live **… 已送达，等待模型 Ns** clock — so the wait is visible instead of looking frozen. That wait is the model, not the channel: measured on the same machine the Host acknowledges in ~2–20 ms and the shim adds ~0.1 s, while one turn took ~1.8 s on a small conversation and ~4.8 s on the panel landing that carried ~182 k input tokens. When the turn finishes, the terminal prints the signed-in DeepSeek account balance (recharge and bonus wallets, formatted like the account panel). A signed-out or unavailable account is reported as such instead of `¥0.00`, and the wallet is fetched in the background while the model works, so the line costs the reply nothing. If terminal chat feels slow, give it a dedicated lean conversation (`dsh new terminal` then `dsh use terminal`) instead of a large landing session, or compact that session. The subcommands that never touch the model are cheap: `dsh use` edits one local file (~15 ms, no channel access), `dsh new`/`dsh rm` are one round trip, and `dsh list` serves cached rows while refreshing them in the background (the first call after a channel start rebuilds them). The ~0.1 s floor on any command that talks to the Host is `curl.exe`'s process start: WSL's own curl cannot reach the Windows host adapter here (the inbound traffic is dropped), so the shim uses the Windows client on purpose.
 
-A `dsh "…"` aimed at the very conversation whose tool call is running it cannot be sent: the prompt would join that live turn, whose end waits for the command to return — a self-lock. The channel refuses it and says why instead of hanging until the deadline; wait for the turn, or type it in the client. The shim passes its caller session (`x-dsh-wsl-caller`) only when the plugin's terminal tool started that shell, so a person typing at a terminal is never affected.
+A `dsh -- "…"` aimed at the very conversation whose tool call is running it cannot be sent: the prompt would join that live turn, whose end waits for the command to return — a self-lock. The channel refuses it and says why instead of hanging until the deadline; wait for the turn, or type it in the client. The shim passes its caller session (`x-dsh-wsl-caller`) only when the plugin's terminal tool started that shell, so a person typing at a terminal is never affected.
 
 While a turn streams, the terminal has no prompt — but it is still yours: press Enter once and the answer is held back (the live clock stops painting, the input line is clean), type the message, press Enter again and it is delivered to the same conversation as a steer, after which the answer resumes (`已插入当前对话，继续输出`). A second empty Enter cancels. Set `DSH_WSL_NO_STEER=1` to turn that reader off (scripts and pipes never get it; only a real terminal does).
 
@@ -825,7 +827,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1569 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
+npm test          # 1572 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 
