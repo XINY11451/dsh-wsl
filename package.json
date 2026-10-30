@@ -1,6 +1,6 @@
 {
   "name": "dsh-wsl-tool",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "Extends the working range of DSH into WSL. Files in the distribution can be read, written, edited and searched by DSH directly. Depending on the task, the AI chooses for itself: run a one-off command, or open its own terminal and run several commands there to finish the job. Typing `dsh` in a WSL terminal calls DSH (type `dsh help` there for details), fusing WSL and DSH deeply. Every terminal you open can collaborate visually with the AI.",
   "type": "module",
   "main": "index.js",
