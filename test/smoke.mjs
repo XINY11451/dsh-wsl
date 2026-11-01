@@ -3735,6 +3735,55 @@ async function toolTests(tools, shim) {
       host.calls.terminated === 1 && String(finished.summary).includes('closed'), String(finished.summary))
   }
   {
+    // The lazy handle must forward OWNERSHIP, not just the driving calls. With `owns` (and
+    // `kindOf`) missing, every terminal looked like the user's: `close` refused the shell the
+    // tool had just opened and `subtask-done keepTerminal:false` leaked one shell per subtask,
+    // while the header called the private PTY a sidebar terminal.
+    const ptyCtx = (() => {
+      const calls = { spawn: [] }
+      const handle = makeBridgePtyHandle()
+      const subprocess = {
+        resolveExecutable: async (name) => `C:/Windows/System32/${name}`,
+        spawnTerminal: async (spec) => { calls.spawn.push(spec); return handle },
+      }
+      const ctx = {
+        get: (name) => (name === 'subprocess' ? subprocess : undefined),
+        inject() {},
+        effect() { return () => {} },
+        on() { return () => {} },
+      }
+      return { ctx, calls }
+    })()
+    const lazy = createLazyTerminalTransport({ ctx: ptyCtx.ctx, config: CONFIG })
+    eq('the lazy handle starts on the private shell', lazy.kind, 'pty')
+    eq('and forwards ownership of that shell', lazy.owns('s', 'x'), true)
+    eq('and the per-call kind it forwards', lazy.kindOf('s', 'x'), 'pty')
+    const lazySubtasks = createSubtaskLog()
+    const lazyAgent = { id: 's' }
+    const lazyTool = createWslTermTool({
+      ctx: ptyCtx.ctx, config: CONFIG, subtasks: lazySubtasks, transport: lazy,
+    })
+    const openedRun = await lazyTool.execute({ action: 'run', command: 'pwd', subtask: 'lazy-close' }, { agent: lazyAgent })
+    check('a terminal opened through the lazy handle is described as the tool\'s own',
+      String(openedRun.summary).includes('this tool owns the shell')
+      && String(openedRun.summary).includes('opened by this tool for this session'),
+      String(openedRun.summary).slice(0, 300))
+    const closedLazy = await lazyTool.execute({ action: 'close', id: 'dsh-agent' }, { agent: lazyAgent })
+    check('and the same handle closes the shell it opened',
+      /closed\./.test(String(closedLazy.summary)) && !/was not opened by this tool/.test(String(closedLazy.summary)),
+      String(closedLazy.summary).slice(-200))
+    const listedAfterClose = await lazyTool.execute({ action: 'list' }, { agent: lazyAgent })
+    check('and it is gone from the tool\'s list', !String(listedAfterClose.summary).includes('id=dsh-agent'),
+      String(listedAfterClose.summary).slice(0, 240))
+    // One more shell, ended by subtask bookkeeping rather than by `close`.
+    await lazyTool.execute({ action: 'run', command: 'pwd', subtask: 'lazy-done' }, { agent: lazyAgent })
+    const finishedBySubtask = await lazyTool.execute(
+      { action: 'subtask-done', subtask: 'lazy-done', result: 'done', keepTerminal: false }, { agent: lazyAgent })
+    check('subtask-done keepTerminal:false closes through the lazy handle',
+      /closed \(this tool opened it\)/.test(String(finishedBySubtask.summary)),
+      String(finishedBySubtask.summary).slice(-200))
+  }
+  {
     // The pre-bridge generation (a controller that only speaks follow/write, DSH ≤ 0.2.0) is no
     // longer supported: a host offering nothing else must not fall back to driving the user's
     // browser terminal behind their back.
