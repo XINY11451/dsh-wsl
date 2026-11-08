@@ -980,6 +980,10 @@ async function unitTests() {
       const channelConfig = resolveConfig({}, channelResolved)
       eq('the channel switch reaches the resolved config', channelConfig.channelEnabled, true)
       eq('the channel session id reaches the resolved config', channelConfig.channelSession, 'session-x')
+      // A volatile field only works if `resolveConfig` unwraps the cell — the same trap the
+      // three checks above pin — so the new dock switch is proven through the REAL schema too.
+      const dockConfig = resolveConfig({}, installed.Config({ subtaskDock: false }))
+      eq('the dock switch reaches the resolved config through the real schema', dockConfig.subtaskDock, false)
     }
   }
 
@@ -1149,6 +1153,11 @@ async function unitTests() {
   eq('switches default to on', resolveConfig({}, {}).dangerGuard, true)
 eq('the channel is off by default', resolveConfig({}, {}).channelEnabled, false)
 eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession, '')
+  // The subtask row above the composer is a DISPLAY preference (issue #4): shown by default,
+  // hideable, and a garbage value must not blank a UI the user never asked to blank.
+  eq('the subtask dock is shown by default', resolveConfig({}, {}).subtaskDock, true)
+  eq('the subtask-dock switch turns the row off', resolveConfig({}, { subtaskDock: false }).subtaskDock, false)
+  eq('a non-boolean dock switch falls back to shown', resolveConfig({}, { subtaskDock: 'no' }).subtaskDock, true)
   eq('a non-boolean switch falls back instead of failing the mount',
     resolveConfig({}, { backgroundJobs: 'no' }).backgroundJobs, true)
   // The installer must NOT be mounted without a decision: it adds software. Its default
@@ -2073,6 +2082,7 @@ async function toolTests(tools, shim) {
   eq('it reports this package version', payload.version, ownManifest.version)
   eq('it reports the platform', payload.platform, process.platform)
   check('it carries the switch states the panel shows', payload.config.tools.wsl === true)
+  check('it carries the subtask-dock switch', payload.config.subtaskDock === true, JSON.stringify(payload.config))
   check('it carries the effective timeout', 'commandTimeoutMs' in payload.config)
   check('it carries no filesystem paths',
     !JSON.stringify(payload).includes(process.cwd()),

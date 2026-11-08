@@ -458,7 +458,7 @@ on those hosts instead of reaching into the user's shell. The other five tools a
 plain subprocess calls and still run there, but the package itself does not claim
 that support.
 
-Verified against DSH **0.2.1-rc.5** (and 0.2.1-rc.3 before it): the tool schemas pass DSH's own
+Verified against DSH **0.2.2-rc.1** (and 0.2.1-rc.5 before it): the tool schemas pass DSH's own
 `assertSupportedJsonSchema`, the subprocess seam is exercised against the real
 provider rather than a shim, and the background-job path is checked against the
 real job registry, including the session-id ownership fence (0.2.1 hands out
@@ -503,6 +503,7 @@ explanation.
 | 终端历史行数 | how many lines of output that terminal keeps (`scrollback` on the same row). The platform default is 1000; `0` keeps none and an empty box restores the default. Both fields take effect at the next DSH start |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
 | 管理员模式（root） | whether `wsl` and the four file tools accept `asRoot: true` (`wsl -u root`). WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
+| 显示输入框上方子任务栏 | whether the browser half renders the subtask row above the composer (this conversation's WSL subtasks, and the terminals you opened). **On by default**. Off means nothing is rendered and no height is reserved — not even the faint 「暂无子任务」 line — which keeps another plugin's composer-anchored UI where it belongs. It changes the display only: WSL tools, terminals and the subtask records keep working |
 
 The panel edits the plugin's own configuration, so the same values can be written
 by hand (`- id: tool-wsl` with `config:` in a profile patch) or by environment
@@ -827,7 +828,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1579 host checks against real WSL (shim for ctx.subprocess) + 305 client checks
+npm test          # 1584 host checks against real WSL (shim for ctx.subprocess) + 317 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

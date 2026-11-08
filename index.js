@@ -153,6 +153,7 @@ function defineConfig(Schema) {
   channelEnabled: Schema.boolean().default(false).description('启用 WSL 通道：在 WSL 终端里用 `dsh -- "问题"` 把话发进指定会话，回复流式回到终端。默认关。').volatile(),
   channelSession: Schema.string().default('').description('WSL 通道的落点会话 id；留空表示使用最近活跃的会话（通常就是你在看的那段对话）。终端里的 `dsh use <id>` 可临时切换。').volatile(),
   autoInstallShim: Schema.boolean().default(true).description('启动时检查 WSL 里的 dsh 命令：没安装或与当前版本不一致就自动装好，不用再手动点「安装」。默认开。').volatile(),
+  subtaskDock: Schema.boolean().default(true).description('在输入框上方显示子任务栏（本会话的 WSL 子任务与用户终端记录）。关闭后整个子任务栏不渲染、不占位；只影响界面，不影响工具执行、终端与记录本身。').volatile(),
   distro: Schema.string().default('').description('固定使用的发行版；留空表示使用系统默认（也可用 `DSH_WSL_DISTRO`）。').volatile(),
   timeoutMs: Schema.number().default(0).description('默认命令超时（毫秒）；0 表示使用内置默认（也可用 `DSH_WSL_TIMEOUT_MS`）。').volatile(),
   }).description('dsh-wsl 的功能开关与默认值。')
@@ -645,6 +646,7 @@ async function selfInfo(config, runner, terminalTransport) {
       startInSessionWorkspace: config.startInSessionWorkspace,
       dangerGuard: config.dangerGuard,
       allowRoot: config.allowRoot,
+      subtaskDock: config.subtaskDock,
       distro: config.distro,
       commandTimeoutMs: config.commandTimeoutMs,
       maxOutputBytes: config.maxOutputBytes,

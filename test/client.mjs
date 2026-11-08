@@ -252,7 +252,7 @@ const sectionIn = (nodes, title) => nodes.find((node) => node.type === 'section'
       || (Array.isArray(node.props.children[0].props?.children)
         && node.props.children[0].props.children.includes(title))))
 const switches = found.filter((node) => node.type?.primitiveName === 'Switch')
-check('it renders one switch per switchable feature', switches.length === 15,
+check('it renders one switch per switchable feature', switches.length === 16,
   `found ${switches.length}; rendered: ${found.map((node) => String(node.type?.primitiveName ?? node.type)).join(',')}`)
 const labels = switches.map((node) => node.props?.label).filter((v) => typeof v === 'string')
 for (const expected of [
@@ -260,7 +260,7 @@ for (const expected of [
   'wsl-read 读取文件', 'wsl-write 写入文件', 'wsl-edit 精确替换', 'wsl-grep 搜索内容',
   'wsl-doctor 项目体检', 'wsl-bootstrap 安装工具链',
   '后台任务', '自动转换路径', '默认跟随会话工作区', '危险命令守卫', '管理员模式（root）',
-  '启用 dsh 命令',
+  '显示输入框上方子任务栏', '启用 dsh 命令',
 ]) {
   check(`it labels the ${expected} row`, labels.includes(expected), labels.join(' | '))
 }
@@ -352,6 +352,16 @@ const setOp = ops.find((entry) => entry.batch?.[0]?.op === 'set')
 eq('a toggle writes the row path', JSON.stringify(setOp?.batch?.[0]?.path), '["tools","wsl"]')
 eq('a toggle writes the requested value', setOp?.batch?.[0]?.value, false)
 eq('the write is fenced by the snapshot revision', setOp?.revision, 7)
+// The subtask-dock switch is a plain boolean row like the others: it writes this plugin's own
+// configuration path, so the Host resolves it for the dock without a second channel.
+const dockSwitch = switches.find((node) => node.props?.label === '显示输入框上方子任务栏')
+check('the panel offers the subtask-dock display switch', dockSwitch !== undefined)
+if (dockSwitch !== undefined) {
+  await dockSwitch.props.onChange(false)
+  const dockWrite = ops.filter((entry) => entry.batch?.[0]?.path?.[0] === 'subtaskDock').pop()
+  eq('the dock switch writes its configuration path', JSON.stringify(dockWrite?.batch?.[0]?.path), '["subtaskDock"]')
+  eq('the dock switch writes the requested value', dockWrite?.batch?.[0]?.value, false)
+}
 // Clearing overrides lives in ONE place, not on every row: the panel renders a
 // single control that unsets every overridden path in one revision-fenced write.
 const resetControls = found.filter((node) => node.props?.children === '全部恢复默认')
@@ -974,6 +984,9 @@ console.log('\nthe subtask dock above the composer')
 const dock = registered.find((row) => row.seat.id === 'wsl-subtasks')
 check('it registers a row in the composer dock', dock !== undefined)
 eq('the row sits after the app\'s own dock entries', dock?.seat.order, 30)
+check('the dock seat injects the configuration model its display switch comes from',
+  typeof dock?.seat.inject === 'function' && typeof dock.seat.inject()?.model?.read === 'function',
+  typeof dock?.seat.inject)
 const dockFetch = context.fetch
 {
   const payload = {
@@ -1106,6 +1119,56 @@ const dockFetch = context.fetch
   await noSession.flush()
   eq('without a session it renders nothing', textOf(noSession.tree()), '')
   noSession.unmount()
+}
+context.fetch = dockFetch
+
+// --- the 「显示输入框上方子任务栏」 switch (issue #4) -------------------------
+//
+// The row is a display preference, so OFF must mean OFF in every sense: no summary, no faint
+// "暂无子任务", no reserved height — and no route read either, because a hidden row that keeps
+// polling is still work the user turned off. It is read from the settings scope, not fetched
+// through the route, so a flip in the panel has to land without a reload.
+console.log('\nthe subtask-dock display switch')
+{
+  const requests = []
+  context.fetch = (url) => {
+    requests.push(String(url))
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ sessions: {} }) })
+  }
+  const listeners = new Set()
+  let value = { subtaskDock: false }
+  const model = {
+    read: () => ({ status: 'ready', value, writable: true, revision: 1 }),
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  const off = mountStateful(dock.component, { sessionId: 'session-1', model })
+  await off.flush()
+  eq('with the display switch off the dock renders nothing, not even the empty line',
+    textOf(off.tree()), '')
+  check('and the tree is null, so no element can reserve layout space',
+    off.tree() === null, JSON.stringify(off.tree()))
+  eq('and a hidden dock does not read the subtask route at all', requests.length, 0)
+  // Live: the Host settings scope publishes after a write; the row has to come back by itself.
+  value = { subtaskDock: true }
+  for (const listener of Array.from(listeners)) listener()
+  await off.flush()
+  eq('turning the switch back on brings the row back', textOf(off.tree()), '暂无子任务')
+  check('and it starts reading the route', requests.length > 0, String(requests.length))
+  off.unmount()
+  eq('the dock releases its settings subscription when it unmounts', listeners.size, 0)
+
+  // A snapshot without the field (an older Host, or one still loading) keeps the shipped
+  // default: only an explicit `false` hides the row.
+  const bare = mountStateful(dock.component, {
+    sessionId: 'session-1',
+    model: { read: () => ({ status: 'ready', value: {}, writable: true, revision: 1 }), subscribe: () => () => {} },
+  })
+  await bare.flush()
+  eq('a snapshot without the field keeps the row (the shipped default)', textOf(bare.tree()), '暂无子任务')
+  bare.unmount()
 }
 context.fetch = dockFetch
 

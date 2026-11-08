@@ -367,7 +367,7 @@ wsl-grep({ pattern: 'PasswordAuthentication', path: '/etc/ssh', asRoot: true })
 宿主上会明确报告「无法驱动终端」，而不是伸手进你的 shell。其余五个工具只是普通的 subprocess
 调用，在老宿主上仍然能跑，但包本身不再作出那个支持承诺。
 
-已在 DSH **0.2.1-rc.5** 上验证（更早的 0.2.1-rc.3 同样验证过）：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
+已在 DSH **0.2.2-rc.1** 上验证（更早的 0.2.1-rc.5、0.2.1-rc.3 同样验证过）：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
 subprocess 接缝是跑在**真实 provider** 上而非替身；后台任务路径跑在**真实 job 注册表**上，
 包含「会话 id 属主围栏」（0.2.1 的 job id 是 `kind-<16 hex>`，所以检查读注册表给的那个 id，
 而不是假定形状）。这套检查就是 `test/real-seam.mjs`，约一分钟即可重验一个新宿主——升级后把它
@@ -407,6 +407,7 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | 终端历史行数 | 那个终端保留多少行输出（同一行上的 `scrollback`）。平台默认 1000；填 `0` 不保留，留空回到默认。这两项都在重启 DSH 后生效 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
 | 管理员模式（root） | `wsl` 与四个文件工具是否接受 `asRoot: true`（`wsl -u root`）。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
+| 显示输入框上方子任务栏 | 浏览器半是否渲染输入框上方的子任务栏（本会话的 WSL 子任务，以及你打开的终端）。**默认开**。关闭后整行都不渲染、不占高度——连那行很淡的「暂无子任务」也不留——依附输入框定位的其它插件 UI 因此不会被顶开。只影响显示：WSL 工具、终端与子任务记录照常工作 |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
 或用环境变量设。优先级由 `lib/config.js` 定：**插件配置 > 环境变量 > 内置默认值**；开关停在默认值时
@@ -706,7 +707,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 1579 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 305 项客户端检查
+npm test          # 1584 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 317 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 
