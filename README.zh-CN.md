@@ -584,6 +584,12 @@ token）。按 `Ctrl+C` 只是停止等待，那一轮会在客户端里继续�
 - `timeoutMs` 默认 10 分钟，避免卡死的 `wsl.exe` 永久挂住调用；需要长时间运行的命令可以传更大的值，
   但上限是 `DSH_WSL_MAX_TIMEOUT_MS`（默认 24 小时）——手滑不会变成"永不超时"。结果里回报的始终是
   **实际生效**的那个期限。到点会连 Linux 侧进程一起杀掉（Windows 上由 provider 使用 `taskkill /T /F`）。
+- **命令被信号杀死时，退出码是对的，信号名字丢了。** `wsl.exe` 把「直接子进程死于信号」上报成
+  **退出码 = 信号编号**，而不是 shell 惯用的 128+N：实测 `kill -TERM $$` 得到 `[exit code: 15]`、
+  `kill -9 $$` 得到 `[exit code: 9]`。因此 `[killed by signal: …]` 那条标记在 WSL 上不会出现，
+  `exit 9` / `exit 15` 也可能是一次信号而不是命令自己的退码——`128+N` 只有在**发行版内部**才看得到。
+  需要区分时把命令放进 `bash -c`，它对子进程给出的 `$?` 就是 `128+N`：
+  `bash -c 'kill -9 $$'; echo "inner=$?"` → `inner=137`（128+9 = SIGKILL）。
 - **宿主 shell 的环境事实会转发进发行版**（WSL 默认不跨边界传 Windows 环境变量）：`DSH_SESSION_ID`、
   `DSH_SHELL`、以及翻译成 `/mnt/...` 形式的 `DSH_HOME` 会在命令前 `export`，脚本因此能看到与平台自带
   shell 工具一致的会话事实。这些值**按次**从宿主的 `shellEnv` 注册表解析（与其他 shell 工具同一个来源），
@@ -602,12 +608,25 @@ token）。按 `Ctrl+C` 只是停止等待，那一轮会在客户端里继续�
   （后来复测：**885 vs 116 MB/s**、**13 ms vs 745 ms**，比值稳定在约 8× 与 50×）。
 
   不只是慢。`/mnt/<盘>` 是 9p（drvfs）挂载，保留的是 **Windows** 的文件系统语义：
-  `chmod`/`chown` 不生效（`chmod 600` 读回来是 `777`）、文件名**大小写不敏感**（大小写写错只在
-  Linux CI 上才炸）、符号链接与可执行位是合成的，而且 **inotify 完全不工作**——发行版里的 watcher
+  `chmod`/`chown` 默认不生效（`chmod 600` 读回来是 `777`）——除非 `[automount] options` 里带了
+  `metadata`：本机实测带 `metadata` 时 `chmod 600` 读回 `600`（换个发行版或挂载配置就未必，别依赖它）。
+  文件名**大小写不敏感**（大小写写错只在 Linux CI 上才炸）、符号链接与可执行位是合成的，而且
+  **inotify 完全不工作**——发行版里的 watcher
   对两侧写入都收不到任何事件（用 inotify 探针实测：`/mnt/d` 上 Windows 侧写入与 Linux 侧写入均为
   **0 事件**，而同一探针在 ext4 上正常报出创建/修改/关闭写入）。因此 dev server、`--watch` 模式
   与文件监听的测试在 Windows 盘上都是瞎的。需要时把项目放到 `/home` 下：语义、监听事件与上面那档
   速度一次性都回来。
+- **WSL 与 Windows 的 `127.0.0.1` 不互通。** 默认 NAT 模式下，Windows 上只绑回环的服务在发行版里
+  连不上（实测：Windows 监听 `127.0.0.1:PORT` 时，WSL 连 `127.0.0.1` 与默认网关地址都返回 000）；
+  让那个服务改绑 `0.0.0.0` 之后，WSL 连 `http://$(ip route | awk '/^default/{print $3}')` 即通。
+  反方向是好的：Windows 连发行版里的服务走 `localhost`，由 localhostForwarding 接管（实测 HTTP 200）。
+  需要双向直连时，`%UserProfile%\.wslconfig` 里加 `[wsl2] networkingMode=mirrored`（改完 `wsl --shutdown`）。
+- **Windows 的 `PATH` 会被追加到 Linux 的 `PATH` 后面**（`[interop] appendWindowsPath` 默认开），
+  于是 `docker`、`code`、`adb`、`dotnet` 这类**看起来属于 Linux** 的名字会解析到 `/mnt/c/...` 的
+  `.exe`，在 Linux 目录里跑它们报的错两头都不沾。`wsl-doctor` 会把这种解析标成 `WINDOWS`；
+  手工判断用 `command -v <名字>`——输出以 `/mnt/` 开头就是 interop 二进制，不是发行版里的那个。
+  想把两个世界彻底分开，在 `/etc/wsl.conf` 里写 `[interop] appendWindowsPath=false`（interop 本身
+  仍开着，Windows 程序用绝对路径照样能调），然后 `wsl --shutdown`。
 - 危险命令默认被拒绝，除非调用时传 `allowDangerous: true`：
   - **任何递归删除**——`rm -r`、`rm -rf`、`rm -r -f`、`rm -R --force`、`rm --recursive`——
     因为 stdin 指向 `/dev/null` 时不会产生任何提示，`rm -r tree` 会静默删除整棵树。

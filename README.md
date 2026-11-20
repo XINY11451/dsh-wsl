@@ -701,6 +701,7 @@ takes effect on restart.
   ```
 - **Host shell facts are forwarded into the distro**, because WSL does not pass Windows environment variables across on its own: `DSH_SESSION_ID`, `DSH_SHELL` and `DSH_HOME` (translated to its `/mnt/...` view) are exported ahead of the command, so a script sees the same session facts the platform's own shell tools inject. They are resolved **per call** from the host's `shellEnv` registry — the same source the other shell tools read — because they are session-scoped, not host constants; reading the host's own `process.env` finds nothing and silently forwards nothing. **`DSH_WEB_URL` is deliberately not forwarded** — it is a `127.0.0.1` URL for the Windows-side server, and in the default NAT networking mode WSL cannot reach Windows loopback (measured: HTTP 000 on both `127.0.0.1` and the host IP, which the server does not bind either). An explicit `env` entry always overrides a forwarded one.
 - `timeoutMs` defaults to 10 minutes so a wedged `wsl.exe` cannot hang the call forever; pass a larger value for genuinely long work, up to the `DSH_WSL_MAX_TIMEOUT_MS` ceiling (24 h by default) — a slip of the keyboard cannot mean "never time out". The value reported back is always the deadline actually armed. The timeout also kills the Linux-side process (the provider uses `taskkill /T /F` on Windows).
+- **A command killed by a signal keeps its exit code but loses its name at the WSL boundary.** `wsl.exe` reports "the direct child died from a signal" as **exit code = signal number**, not the shell convention `128 + N`: measured, `kill -TERM $$` yields `[exit code: 15]` and `kill -9 $$` yields `[exit code: 9]`. So the `[killed by signal: …]` marker never appears under WSL, and an `exit 9` / `exit 15` may be a signal rather than the command's own status — `128 + N` is only visible **inside** the distribution. To tell them apart, run the command under `bash -c`, whose `$?` for a signal-killed child is `128 + N`: `bash -c 'kill -9 $$'; echo "inner=$?"` prints `inner=137` (128 + 9 = SIGKILL).
 - `wsl-env` also states where the session's own files live, and whether that is a Windows drive mount:
 
   ```
@@ -713,15 +714,20 @@ takes effect on restart.
   against 745 ms — the ratios hold at roughly 8× and 50×).
 
   It is not only slower. `/mnt/<drive>` is a 9p (drvfs) mount, so it keeps **Windows**
-  filesystem semantics: `chmod`/`chown` do not stick (a `chmod 600` reads back as
-  `777`), names are case-insensitive (so a case-sensitive import only fails on Linux
-  CI), symlinks and the executable bit are synthetic, and **inotify does not work at
-  all** — a watcher inside the distro receives no events for writes from either side
+  filesystem semantics: `chmod`/`chown` do not stick by default (a `chmod 600` reads
+  back as `777`) — unless `[automount] options` carries `metadata`, in which case the
+  bits do survive (measured: a `chmod 600` read back as `600`; a different distro or
+  mount setup will not, so do not rely on it). Names are case-insensitive (so a
+  case-sensitive import only fails on Linux CI), symlinks and the executable bit are
+  synthetic, and **inotify does not work at all** — a watcher inside the distro
+  receives no events for writes from either side
   (measured with an inotify probe on `/mnt/d`: zero events for a Windows-side write
   and for a Linux-side write, while the same probe on ext4 reported create, modify
   and close-write). Dev servers, `--watch` modes and file-watching tests are
   therefore blind on a Windows drive. Keep a project under `/home` when it matters:
   it recovers real semantics, real watch events, and the speed above.
+- **`127.0.0.1` is not shared between WSL and Windows.** In the default NAT mode a Windows service bound only to loopback is unreachable from the distribution (measured: a listener on `127.0.0.1:PORT` gave 000 from WSL on both `127.0.0.1` and the default-gateway address); rebinding it to `0.0.0.0` makes `http://$(ip route | awk '/^default/{print $3}')` connect. The other direction works: Windows reaches a service inside the distribution on `localhost`, via localhostForwarding (measured: HTTP 200). For direct two-way traffic, add `[wsl2] networkingMode=mirrored` to `%UserProfile%\.wslconfig` (then `wsl --shutdown`).
+- **Windows' `PATH` is appended to the Linux one** (`[interop] appendWindowsPath` defaults to on), so names that look native — `docker`, `code`, `adb`, `dotnet` — resolve to `.exe`s under `/mnt/c/...`, and the errors they produce against a Linux directory name neither cause. `wsl-doctor` labels such a resolution `WINDOWS`; to check by hand, look at `command -v <name>` — a `/mnt/` prefix means an interop binary rather than the distribution's own. To keep the two worlds apart, set `[interop] appendWindowsPath=false` in `/etc/wsl.conf` (interop itself stays on, so a Windows program is still reachable by absolute path) and run `wsl --shutdown`.
 - Destructive commands are refused unless the call passes `allowDangerous: true`:
   - **any recursive delete** — `rm -r`, `rm -rf`, `rm -r -f`, `rm -R --force`, `rm --recursive` — because with stdin on `/dev/null` nothing prompts, so `rm -r tree` deletes silently. Each `rm` invocation is judged on its own command segment, so `rm a -f; rm b -r` cannot combine into a pass; an `rm` that is an ARGUMENT is a mention, not an invocation, so `npm rm -r foo` and `ls rm -r` are left alone;
   - `dd` onto a block device, `mkfs`/`mke2fs`, partitioning/wiping tools (`fdisk`, `parted`, `wipefs`, `mkswap`, …), `truncate` aimed at a device, `find … -delete`, a `git clean` that would remove rather than report, power control (`shutdown`, `reboot`, `systemctl reboot`, …), redirection onto a block device (SATA/NVMe/virtio, `md`, `dm-*`, LVM `mapper`), and fork bombs;
