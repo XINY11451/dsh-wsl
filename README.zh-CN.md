@@ -122,7 +122,7 @@ next: node, npm are not usable — wsl-bootstrap({ recipes: ["node", "pnpm"] }) 
 
 **在发行版内部**补装缺失的工具链，只认固定配方：`node`（Node.js LTS 装进 `/usr/local`，
 校验 sha256，并启用 corepack）、`pnpm`、`python`（python3 + pip + venv）、`build`
-（build-essential）、`tools`（jq、rsync、curl、git、ca-certificates）。依赖按需带上：
+（build-essential）、`tools`（jq、ripgrep、rsync、curl、git、ca-certificates）。依赖按需带上：
 `pnpm` 会带上 `node`，`curl` 缺失时 `node` 会带上 `tools`。
 
 **它默认关**，且 `dryRun` 默认为 `true`，所以第一次调用只打印计划、什么都不改：
@@ -134,8 +134,8 @@ already present:
   python — python3, pip and venv (apt)
 
 to install (python, tools):
-  [tools] apt packages: ca-certificates curl git jq rsync — runs as root inside the distribution
-      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq rsync
+  [tools] apt packages: ca-certificates curl git jq ripgrep rsync — runs as root inside the distribution
+      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq ripgrep rsync
 
 apt would report:
   Inst libjq1 (1.6-2.1ubuntu3.2 Ubuntu:22.04/jammy-updates [amd64])
@@ -299,7 +299,7 @@ GNU `grep -E`——Ubuntu 镜像默认就是后者。这个差异在两处可见
   会先把它翻成 `[0-9]`（`\D` 翻成 `[^0-9]`）再搜；`\w`、`\s`、`\b` 是 GNU 扩展，两边含义一致。
   只有 `rg` 认得的写法（环视、反向引用）会让 `grep` 直接报错，结果是**搜索失败**，而不是"没有匹配"。
 - **忽略规则。** `rg` 会跳过 `.gitignore` 排除的文件，`grep` 不会，所以同一条搜索在两台机器上
-  可能返回不同的文件集合。在意这个差异时，用 `wsl-bootstrap` 把 `ripgrep` 装上——`grep` 是 busybox
+  可能返回不同的文件集合。在意这个差异时，用 `wsl-bootstrap` 的 `tools` 配方把 `ripgrep` 装上——`grep` 是 busybox
   版本的发行版（Alpine 等）也只能靠它：busybox grep 没有 `-Z` 和 `--include`，工具会先探测并说明，
   而不是把 "invalid option" 当成搜索失败。
 
