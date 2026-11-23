@@ -1356,6 +1356,7 @@ eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession
   eq('an absent command is missing', commandState(doctorFacts, 'pnpm').state, 'missing')
   eq('suggestions map commands onto recipes', suggestionRecipes(['node', 'pnpm']).join(','), 'node,pnpm')
   eq('python maps to its own recipe', suggestionRecipes(['python3', 'pip3']).join(','), 'python')
+  eq('ripgrep maps onto the tools recipe', suggestionRecipes(['rg']).join(','), 'tools')
   // Tool output has no common shape, so one extractor has to read all of them.
   eq('a v-prefixed version', versionToken('v24.11.0'), '24.11.0')
   eq('a named version', versionToken('Python 3.10.12'), '3.10.12')
@@ -1429,7 +1430,7 @@ eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession
   eq('every apt recipe collapses into ONE step', aptPlan.steps.length, 1)
   check('with the packages merged',
     aptPlan.steps[0].command.includes(
-      'apt-get install -y build-essential ca-certificates curl git jq python3 python3-pip python3-venv rsync',
+      'apt-get install -y build-essential ca-certificates curl git jq python3 python3-pip python3-venv ripgrep rsync',
     ),
     aptPlan.steps[0].command)
   eq('and a read-only simulation of the same step',

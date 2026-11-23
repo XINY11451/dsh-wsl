@@ -142,7 +142,7 @@ directory, else the session workspace) and `distro`.
 Installs the missing toolchain **inside the distribution**, from a fixed recipe
 list and nothing else: `node` (Node.js LTS into `/usr/local`, checksum-verified,
 with corepack), `pnpm`, `python` (python3 + pip + venv), `build`
-(build-essential), `tools` (jq, rsync, curl, git, ca-certificates). Dependencies
+(build-essential), `tools` (jq, ripgrep, rsync, curl, git, ca-certificates). Dependencies
 are added when they are needed: `pnpm` brings `node`, and `node` brings `tools`
 when `curl` is missing.
 
@@ -156,8 +156,8 @@ already present:
   python — python3, pip and venv (apt)
 
 to install (python, tools):
-  [tools] apt packages: ca-certificates curl git jq rsync — runs as root inside the distribution
-      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq rsync
+  [tools] apt packages: ca-certificates curl git jq ripgrep rsync — runs as root inside the distribution
+      export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y ca-certificates curl git jq ripgrep rsync
 
 apt would report:
   Inst libjq1 (1.6-2.1ubuntu3.2 Ubuntu:22.04/jammy-updates [amd64])
@@ -375,7 +375,7 @@ write a pattern:
   as a search failure rather than as "no matches".
 - **Ignore rules.** `rg` skips what `.gitignore` excludes and `grep` does not, so the same
   search can return different sets of files on two machines. Install `ripgrep`
-  (`wsl-bootstrap` will do it) when that difference matters — it is also what a distribution
+  (the `tools` recipe of `wsl-bootstrap` does it) when that difference matters — it is also what a distribution
   whose `grep` is busybox needs, because busybox grep has neither `-Z` nor `--include`; the
   tool probes for them and says so instead of failing with "invalid option".
 
