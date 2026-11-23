@@ -18,7 +18,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 
 ## 工具
 
-插件注册十个工具。除 `wsl-term` 外每个都有独立开关，其中 `wsl-doctor` 与 `wsl-bootstrap` **默认关**：
+插件注册十一个工具。除 `wsl-term` 外每个都有独立开关，其中 `wsl-doctor` 与 `wsl-bootstrap` **默认关**：
 
 | 工具 | 用途 |
 |---|---|
@@ -32,6 +32,7 @@ Linux 原生 DSH：真实的 Linux 内核与 bash、退出码与信号、超时�
 | `wsl-write` | 写入发行版里的文本文件，原子替换，父目录自动创建 |
 | `wsl-edit` | 在发行版里的文件中替换唯一匹配的字符串 |
 | `wsl-grep` | 在发行版里按正则搜索文件内容，按文件分组返回带行号的匹配行 |
+| `wsl-glob` | 在发行版里按通配符找文件：按修改时间排序，最多内联 100 条；超出时保留前 100 条，并把读到的路径落盘（走完整棵树时才是完整列表）。有 `rg` 用 `rg`，否则用 GNU `find` |
 
 ### `wsl`
 
@@ -106,17 +107,26 @@ needs (from the project): node, npm, pnpm
   MISSING pnpm — not on PATH in this distribution (from pnpm-lock.yaml)
 
 usable on the Linux side: python3 3.10.12, gcc 11.4.0, make 4.3, git 2.34.1, curl, rsync, tar, sudo
-Windows binaries on the Linux PATH (interop): npm -> /mnt/c/Program Files/nodejs/npm, npx -> …
+interop: appendWindowsPath=on (default) — 6 Windows PATH entries; shadows: npm, npx, code
+network: NAT — Windows loopback (127.0.0.1) is not reachable from this distro, default gateway 192.168.160.1; a Windows-side service must bind 0.0.0.0 (or set [wsl2] networkingMode=mirrored in .wslconfig, then wsl --shutdown)
+mount: /mnt/d (9p) has no metadata — chmod does not stick (a 600 reads back 777); add metadata to [automount] options in /etc/wsl.conf, then wsl --shutdown
 privileges: uid=1000 (xiny) · sudo: requires a password (unusable from a tool call) · root: switched off
 
+next: set [interop] appendWindowsPath=false in /etc/wsl.conf, then wsl --shutdown
 next: node, npm are not usable — wsl-bootstrap({ recipes: ["node", "pnpm"] }) installs them …
 ```
 
 那行 `WINDOWS` 就是它存在的理由。WSL 会把 Windows 的 `PATH` 接到 Linux 的后面，于是
 `npm` 在一套**根本没有 `node`** 的发行版里"找得到"（本机实测就是
-`/mnt/c/Program Files/nodejs/npm`），模型拿它去跑 Linux 目录时报的错两头都不沾。整体只读、
-开销很小，值得在把失败归咎于命令本身之前先跑一次。可选参数 `workspace`（Linux 目录；默认取
-配置的目录，否则取会话工作区）与 `distro`。
+`/mnt/c/Program Files/nodejs/npm`），模型拿它去跑 Linux 目录时报的错两头都不沾。
+
+`privileges:` 上面三行是两套系统之间的**边界事实**：interop 的 `PATH` 盖住了哪些命令（以及怎么把两个世界
+分开）、网络模式决定 Windows 侧服务在发行版里是否可达、工作区的挂载是否带
+`metadata`（决定 `chmod` 是不是真的生效）。每一条都只在读得到时才出现——老版本 WSL 没有
+`wslinfo`、工作区在 ext4 上，就干脆不显示那一行，而不是猜一个值。
+
+整体只读、开销很小，值得在把失败归咎于命令本身之前先跑一次。可选参数 `workspace`
+（Linux 目录；默认取配置的目录，否则取会话工作区）与 `distro`。
 
 ### `wsl-bootstrap`
 
@@ -268,8 +278,8 @@ wsl-edit({ path: '~/app/config.json', oldString: '"port": 80', newString: '"port
 - **`asRoot` 是打开"你没有权限的文件"的那扇门。** 用户读不了的文件会被明确拒绝为 `permission
   denied`，而不是当成空文件返回；同一个调用加上 `asRoot: true`（并且面板里打开「管理员模式」）就以
   root 执行，把它读出来。以 root 编辑时会复制原文件的属主，所以改别人的文件不会把它悄悄变成 root 的。
-- **四个工具都有面板开关，默认开。** `wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep` 可以像老工具
-  一样在插件面板里单独关掉；开关即时生效，不用重启。
+- **五个工具都有面板开关，默认开。** `wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep`、`wsl-glob`
+  可以像老工具一样在插件面板里单独关掉；开关即时生效，不用重启。
 
 ### `wsl-grep`
 
@@ -307,6 +317,35 @@ GNU `grep -E`——Ubuntu 镜像默认就是后者。这个差异在两处可见
 一个路径，而不会被拆成"文件 `a`、第 `b.ts` 行"。二进制文件不会出现在结果里——`grep -I` 与 `rg`
 的默认行为都会跳过它们。
 
+### `wsl-glob`
+
+在发行版里按通配符找文件——就是平台自带 `glob` 的对应物，只是指向发行版而不是 Windows：
+
+```
+wsl-glob({ pattern: '**/*.ts', path: '~/project' })
+wsl-glob({ pattern: '*.{js,jsx}', path: '/etc/nginx' })
+```
+
+`pattern` 是 ripgrep 通配符，`path` 是 Linux 路径（默认当前会话的工作目录）。结果**只有路径**——
+按内容搜是 `wsl-grep` 的事——最多内联 100 条，按**修改时间升序**（与平台 `glob` 的
+`rg --sort=modified` 一致）；更大的结果保留前 100 条，并把读到的路径写进 spill 文件、在回答里
+给出路径——走完整棵树时它就是完整列表，正文窗口被截断时则只是读到的前若干条。（落盘用宿主
+自带的 spill 服务；宿主没有这个服务时，回答会提示收窄模式，而不是给出文件路径。）隐藏文件与被 `.gitignore` 排除的文件都会包含（这是平台 `glob` 的契约），但
+`.git`/`.hg`/`.svn`/`.bzr`/`.jj`/`.sl` 这些版本库元数据永远不会进去（目录和同名文件都排除）。结果超过 1 MiB 正文窗口时会被截断
+并说明；有目录读不到时会标注不完整，而不是把找到的部分当成全部。
+
+不含 `/` 的模式按文件名在任意深度匹配；带 `/` 的模式（`src/*.ts`）以会话工作目录为锚，这一点与
+平台 `glob` 相同——所以想让某个目录在任意深度都命中时，用 `**/` 前缀。引擎取决于发行版装了什么：
+有 ripgrep 就用 `rg --files --sort=modified --no-ignore --hidden`，否则用 GNU `find`（`-printf`
+取 mtime 排序、剪掉版本库目录、默认包含隐藏文件）。回退只认按文件名匹配的通配符：仍带路径分隔符
+的模式（`src/*.ts`）会被拒绝并给出做法——装 ripgrep（`wsl-bootstrap` 的 `tools` 配方）或改用
+文件名模式——回退只接受「可选的 `**/` 前缀 + 文件名」这一种带路径形状的写法——因为
+`find -name` 与 `rg --glob` 对这些模式的读法并不一致。另外两种写法也必须装 ripgrep：取反模式（`!x`）
+与展开超过 64 个分支的花括号模式——回退会明确拒绝，而不是给出不同答案。返回的路径就是引擎打印的
+形式（去掉开头的 `./`），可以直接喂给 `wsl-read`、`wsl-grep`、`wsl-edit`，不需要再 `wsl-path`
+转换——这也是它和平台 `glob` 走 `\\wsl.localhost\...` 的区别：后者返回 UNC 路径，还要付 9p 的
+延迟（在某些目录树上还会撞上权限错误）。
+
 ## 以 root 执行（`asRoot`）
 
 WSL 的 root 不需要密码，因此可以让单次调用以 root 执行（即 `wsl -u root`）。它由面板里的一项开关把关
@@ -320,7 +359,7 @@ wsl({ command: 'apt-get install -y jq', description: 'install jq', asRoot: true 
 你的普通用户。每次以 root 执行的结果都会标注（`[ran as root: wsl -u root]`）；危险命令守卫照旧叠加生效：
 `rm -rf` 无论是否以 root 执行都仍需 `allowDangerous: true`。
 
-四个文件工具接受同一个参数、遵守同一项开关——`wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep` 都支持
+支持 `asRoot` 的四个文件工具接受同一个参数、遵守同一项开关——`wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep` 都支持
 `asRoot`——所以"用户打不开的文件或目录"只差一个参数，不必再绕去写一条 `wsl` 命令：
 
 ```
@@ -364,10 +403,10 @@ wsl-grep({ pattern: 'PasswordAuthentication', path: '/etc/ssh', asRoot: true })
 行动：插件市场把它在条目上标成要求，并在装到更老的宿主上之前给出提醒；宿主自己的安装门禁也会
 拒绝「声明的范围不含当前 DSH」的版本。**只支持 0.2.1 及更新版本**：旧代终端兼容层（DSH ≤0.2.0，
 插件可以通过 `terminalController.follow`/`write` 直接驱动浏览器终端）已经删除，终端工具在这些
-宿主上会明确报告「无法驱动终端」，而不是伸手进你的 shell。其余五个工具只是普通的 subprocess
+宿主上会明确报告「无法驱动终端」，而不是伸手进你的 shell。其余工具只是普通的 subprocess
 调用，在老宿主上仍然能跑，但包本身不再作出那个支持承诺。
 
-已在 DSH **0.2.2-rc.1** 上验证（更早的 0.2.1-rc.5、0.2.1-rc.3 同样验证过）：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
+已在 DSH **0.2.2-rc.5** 上验证（0.2.3-alpha.2 与更早的 0.2.2-rc.1、0.2.1-rc.5、0.2.1-rc.3 同样验证过）：工具 schema 通过 DSH 自己的 `assertSupportedJsonSchema`；
 subprocess 接缝是跑在**真实 provider** 上而非替身；后台任务路径跑在**真实 job 注册表**上，
 包含「会话 id 属主围栏」（0.2.1 的 job id 是 `kind-<16 hex>`，所以检查读注册表给的那个 id，
 而不是假定形状）。这套检查就是 `test/real-seam.mjs`，约一分钟即可重验一个新宿主——升级后把它
@@ -397,6 +436,11 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | `wsl` 命令执行 | 是否注册 `wsl` 工具 |
 | `wsl-path` 路径转换 | 是否注册 `wsl-path` 工具 |
 | `wsl-env` 能力体检 | 是否注册 `wsl-env` 工具 |
+| `wsl-read` 读取文件 | 是否注册 `wsl-read` 工具 |
+| `wsl-write` 写入文件 | 是否注册 `wsl-write` 工具 |
+| `wsl-edit` 精确替换 | 是否注册 `wsl-edit` 工具 |
+| `wsl-grep` 搜索内容 | 是否注册 `wsl-grep` 工具 |
+| `wsl-glob` 查找文件 | 是否注册 `wsl-glob` 工具：按通配符找文件，按修改时间排序，内联 100 条 + 读到的路径落盘 |
 | `wsl-doctor` 项目体检 | 是否注册 `wsl-doctor`，**默认关**：诊断类工具按需开启 |
 | `wsl-bootstrap` 安装工具链 | 是否注册 `wsl-bootstrap`，它可能往发行版里装东西。**默认关**，且每次调用还得显式关掉 `dryRun` |
 | 后台任务 | `wsl` 是否接受 `runInBackground` |
@@ -406,7 +450,7 @@ DSH_SUBPROCESS_LOCAL=/path/to/dsh/node_modules npm run test:real
 | WSL 终端启动路径 | 可选的侧边栏终端从哪个目录启动 —— 写进你 **profile patch** 里 `terminal-controller` 那一行的 `--cd <目录>`（见[可选：在侧边栏开一个 WSL 终端](#可选在侧边栏开一个-wsl-终端)）。留空则删掉该参数；当前值也是从这个文件读的 |
 | 终端历史行数 | 那个终端保留多少行输出（同一行上的 `scrollback`）。平台默认 1000；填 `0` 不保留，留空回到默认。这两项都在重启 DSH 后生效 |
 | 危险命令守卫 | 危险命令是否必须显式 `allowDangerous` |
-| 管理员模式（root） | `wsl` 与四个文件工具是否接受 `asRoot: true`（`wsl -u root`）。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
+| 管理员模式（root） | `wsl` 与支持它的四个文件工具（`wsl-read`、`wsl-write`、`wsl-edit`、`wsl-grep`）是否接受 `asRoot: true`（`wsl -u root`）；`wsl-glob` 会明确拒绝这个参数，而不是悄悄忽略。WSL 的 root 免密，所以这项开关就是授权本身；**默认关** |
 | 显示输入框上方子任务栏 | 浏览器半是否渲染输入框上方的子任务栏（本会话的 WSL 子任务，以及你打开的终端）。**默认开**。关闭后整行都不渲染、不占高度——连那行很淡的「暂无子任务」也不留——依附输入框定位的其它插件 UI 因此不会被顶开。只影响显示：WSL 工具、终端与子任务记录照常工作 |
 
 面板改的是插件自己的配置，所以同样的值也可以手写进 profile patch（`- id: tool-wsl` 加 `config:`）
@@ -726,7 +770,7 @@ argv 包一层过 `ctx.sandbox`）和文件系统服务（`@deepseek-ai/dsh-fs-s
 ### 测试
 
 ```sh
-npm test          # 1584 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 317 项客户端检查
+npm test          # 1696 项宿主检查（跑在真实 WSL 上，仅用 shim 顶替 ctx.subprocess）+ 318 项客户端检查
 npm run test:real # 同一套检查改跑真实 provider，外加 seam 事实套件
 ```
 

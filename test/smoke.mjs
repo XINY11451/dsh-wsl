@@ -39,7 +39,8 @@ import {
   writeTerminalCwd, writeTerminalScrollback,
 } from '../lib/terminal-cwd.js'
 import {
-  commandState, composeDoctorReport, needsFromFacts, parseProbe, suggestionRecipes, versionToken,
+  commandState, composeDoctorReport, needsFromFacts, parseProbe, PROBED_COMMANDS, PROJECT_PROBE,
+  suggestionRecipes, versionToken,
 } from '../lib/doctor.js'
 import {
   BOOTSTRAP_TIMEOUT_MS, NODE_LTS_SCRIPT, parsePresence, planFor, presenceProbe, RECIPE_IDS, renderOutcome, renderPlan, resolveRecipes, tailOf,
@@ -48,6 +49,10 @@ import { createWslDoctorTool } from '../lib/tools/wsl-doctor.js'
 import { createWslBootstrapTool } from '../lib/tools/wsl-bootstrap.js'
 import { createWslPathTool } from '../lib/tools/wsl-path.js'
 import { createWslTool } from '../lib/tools/wsl.js'
+import { createWslGlobTool } from '../lib/tools/wsl-glob.js'
+import {
+  fallbackBasenames, GLOB_MAX_RESULTS, globScript, parseGlobOutput, renderGlob, validatePattern,
+} from '../lib/glob.js'
 import {
   appendCapture, autoTerminalIds, clipTail, describeSessionCwd, END_PREFIX, extractHelperResult, HELPER_NAME,
   helperCall, helperDefinition, inputLine, looksReady, OPENED_TERMINAL_NOTE, pickTerminal, renderTerminals, spillLine,
@@ -534,6 +539,16 @@ const DOCTOR_PROBE_TEXT = [
   'user.uid=1000',
   'user.name=xiny',
   'sudo.passwordless=0',
+  // Boundary facts: interop PATH, networking and the workspace mount.
+  'interop.appendWindowsPath=',
+  'interop.conf=ok',
+  'path.windows=6',
+  'cmd.code=interop:/mnt/c/Users/me/AppData/Local/Programs/Microsoft VS Code/bin/code',
+  'net.mode=nat',
+  'net.gateway=192.168.160.1',
+  'mount.target=/mnt/d',
+  'mount.fstype=9p',
+  'mount.options=rw,noatime,aname=drvfs;path=D:\\;uid=1000;gid=1000,symlinkroot=/mnt/,cache=5,access=client',
 ].join('\n')
 
 function makeCtx(shim, { jobs, shellEnv, settings, profileContext, terminalController, spillStore } = {}) {
@@ -1155,6 +1170,8 @@ eq('the channel is off by default', resolveConfig({}, {}).channelEnabled, false)
 eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession, '')
   // The subtask row above the composer is a DISPLAY preference (issue #4): shown by default,
   // hideable, and a garbage value must not blank a UI the user never asked to blank.
+  eq('the file-discovery tool is on by default', resolveConfig({}, {}).tools.glob, true)
+  eq('a tool switch can turn wsl-glob off', resolveConfig({}, { tools: { glob: false } }).tools.glob, false)
   eq('the subtask dock is shown by default', resolveConfig({}, {}).subtaskDock, true)
   eq('the subtask-dock switch turns the row off', resolveConfig({}, { subtaskDock: false }).subtaskDock, false)
   eq('a non-boolean dock switch falls back to shown', resolveConfig({}, { subtaskDock: 'no' }).subtaskDock, true)
@@ -1165,7 +1182,7 @@ eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession
   // all — opening a terminal in the sidebar is the consent it needs — so it is not in
   // this object and cannot be switched off.
   eq('the tool switches default to the read-only and file tools on; the diagnostics and installer are opt-in',
-    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,false,false,true,true,true,true')
+    Object.values(resolveConfig({}, {}).tools).join(','), 'true,true,true,false,false,true,true,true,true,true')
   check('and the terminal tool has no switch of its own',
     resolveConfig({}, {}).tools.term === undefined
     && resolveConfig({}, { tools: { term: false } }).tools.term === undefined)
@@ -1396,6 +1413,92 @@ eq('the channel session defaults to unset', resolveConfig({}, {}).channelSession
   )
   check('a directory with no manifest says so instead of inventing needs',
     emptyReport.includes('no manifest found'), emptyReport)
+
+  // Boundary facts: interop PATH state, networking mode and the workspace mount. These are
+  // the failures that are invisible from either side alone, so the report states each one
+  // with its next step — and stays silent when a fact could not be read.
+  check('the interop line names appendWindowsPath and the Windows PATH depth',
+    /interop: appendWindowsPath=on \(default\) — 6 Windows PATH entries/.test(report), report)
+  check('and it lists the commands the Windows PATH shadows',
+    /shadows: .*npm/.test(report) && /shadows: .*code/.test(report), report)
+  check('the network line explains the NAT loopback split and names the gateway',
+    /network: NAT — Windows loopback \(127\.0\.0\.1\) is not reachable/.test(report)
+    && report.includes('192.168.160.1'), report)
+  check('the mount line says chmod does not stick on a 9p mount without metadata',
+    /mount: \/mnt\/d \(9p\) has no metadata — chmod does not stick/.test(report), report)
+  check('the interop remedy is one next step',
+    report.includes('next: set [interop] appendWindowsPath=false in /etc/wsl.conf, then wsl --shutdown'), report)
+  check('the existing privileges line is not duplicated by the boundary facts',
+    (report.match(/sudo: requires a password/g) ?? []).length === 1, report)
+  const mirroredReport = composeDoctorReport({
+    ...doctorFacts, 'net.mode': 'mirrored', 'mount.options': 'rw,metadata',
+  }, { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null })
+  check('a mirrored network says localhost is shared',
+    mirroredReport.includes('network: mirrored — Windows and WSL share localhost in both directions'), mirroredReport)
+  check('a metadata mount says chmod sticks',
+    /mount: \/mnt\/d \(9p\) carries metadata — chmod sticks/.test(mirroredReport), mirroredReport)
+  const linuxMountReport = composeDoctorReport({
+    ...doctorFacts,
+    'interop.appendWindowsPath': 'false', 'path.windows': '0', 'net.mode': '',
+    'mount.target': '/home/me/proj', 'mount.fstype': 'ext4', 'mount.options': 'rw,relatime',
+  }, { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null })
+  check('an ext4 workspace gets no mount line', !linuxMountReport.includes('mount:'), linuxMountReport)
+  check('appendWindowsPath=false is reported as configured off',
+    linuxMountReport.includes('interop: appendWindowsPath=off (configured)'), linuxMountReport)
+  check('an unknown networking mode is left unstated', !linuxMountReport.includes('network:'), linuxMountReport)
+  // An unreadable /etc/wsl.conf is NOT the default value: saying "on (default)" there
+  // would invent a state the probe could not see.
+  const unreadableConf = composeDoctorReport({
+    ...doctorFacts, 'interop.conf': 'unreadable',
+  }, { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null })
+  check('an unreadable wsl.conf is reported as unknown, not as the default',
+    unreadableConf.includes('state could not be read') && !unreadableConf.includes('appendWindowsPath=on (default)'),
+    unreadableConf)
+  // A configured value may carry quotes or a trailing comment; the first token is
+  // the setting, and a rejected parse must not silently fall back to "unset".
+  const commentedOff = composeDoctorReport({
+    ...doctorFacts, 'interop.appendWindowsPath': '"false" # nope', 'path.windows': '3',
+  }, { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null })
+  check('a quoted/commented appendWindowsPath value is still read',
+    commentedOff.includes('appendWindowsPath=off (configured)'), commentedOff)
+  check('and off with Windows entries explains the contradiction',
+    commentedOff.includes('but Windows entries are still on PATH'), commentedOff)
+  // Windows `code`/`adb` are often the intended binaries (Remote-WSL, device work):
+  // they are reported as shadows, but must not trigger the "turn interop off" advice.
+  const codeOnlyFacts = { ...doctorFacts }
+  delete codeOnlyFacts['cmd.npm']
+  delete codeOnlyFacts['cmd.npx']
+  const codeOnly = composeDoctorReport(codeOnlyFacts, {
+    workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null,
+  })
+  check('an intentional Windows shim is reported but does not trigger the remedy',
+    codeOnly.includes('shadows: code') && !codeOnly.includes('next: set [interop]'), codeOnly)
+  // An unreadable PATH count must not be turned into "entries remain".
+  const unknownCountFacts = { ...doctorFacts, 'interop.appendWindowsPath': 'false' }
+  delete unknownCountFacts['path.windows']
+  const unknownCountReport = composeDoctorReport(unknownCountFacts, {
+    workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null,
+  })
+  check('off without a readable PATH count does not claim entries remain',
+    !unknownCountReport.includes('still on PATH'), unknownCountReport)
+  // `stat -f` spells the 9p bridge `v9fs`; the mount line must still appear.
+  const v9fsMount = composeDoctorReport({
+    ...doctorFacts, 'mount.fstype': 'v9fs', 'mount.options': 'rw,noatime',
+  }, { workspaceLine: '', bootstrapAvailable: true, rootEnabled: false, rootProbe: null })
+  check('a v9fs fstype is treated as the 9p bridge',
+    /mount: \/mnt\/d \(v9fs\) has no metadata — chmod does not stick/.test(v9fsMount), v9fsMount)
+  for (const marker of ['appendWindowsPath', 'wslinfo --networking-mode', 'findmnt -no TARGET', 'stat -c %m', '/proc/mounts', 'v9fs']) {
+    check(`the probe collects the boundary fact ${marker}`, PROJECT_PROBE.includes(marker))
+  }
+  for (const command of ['code', 'adb', 'dotnet', 'qrcp', 'rg']) {
+    check(`the doctor probes the interop shadow candidate ${command}`, PROBED_COMMANDS.includes(command))
+  }
+  // Windows-only shells have no Linux namesake to shadow; probing them made every
+  // default install look like it needed `appendWindowsPath=false`.
+  for (const command of ['powershell.exe', 'cmd.exe']) {
+    check(`the doctor does not report the Windows-only ${command} as a shadow`,
+      !PROBED_COMMANDS.includes(command))
+  }
 
   // --------------------------------------------------------------- bootstrap
   console.log('\ninstaller plan (wsl-bootstrap)')
@@ -1938,7 +2041,7 @@ async function toolTests(tools, shim) {
   const wslOnlyTools = makeCtx(shim, {
     settings: {
       tools: {
-        wsl: true, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false,
+        wsl: true, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false, glob: false,
       },
     },
   })
@@ -1947,19 +2050,19 @@ async function toolTests(tools, shim) {
   const allOffTools = makeCtx(shim, {
     settings: {
       tools: {
-        wsl: false, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false,
+        wsl: false, path: false, env: false, doctor: false, bootstrap: false, read: false, write: false, edit: false, grep: false, glob: false,
       },
     },
   })
   eq('with every switch off, only the switchless terminal tool remains',
     Object.keys(allOffTools).sort().join(','), 'wsl-term')
   eq('the control mount registers the file tools, the read-only tools and the terminal tool',
-    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(tools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   // The installer is absent unless asked for: it adds software. The terminal tool is not
   // optional and not switchable — a terminal the user opens is the consent it needs.
   const optInTools = makeCtx(shim, { settings: { tools: { bootstrap: true } } })
   eq('the installer switch registers exactly its own tool',
-    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(optInTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // A volatile field is written into the same object the loader handed `apply` and
   // then announced, so the behaviour switches must take effect with no remount. The
@@ -1988,19 +2091,19 @@ async function toolTests(tools, shim) {
   const fireToolUpdate = switchableTools.handlers?.get('loader/volatile-update')
   check('the plugin listens for volatile updates that add tools', typeof fireToolUpdate === 'function')
   eq('the installer starts absent while the terminal tool is already there',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-doctor,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.bootstrap = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch on registers its tool live, without a restart',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = false
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('turning a tool switch off retires its tool live too',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
   switchableSettings.tools.doctor = true
   if (typeof fireToolUpdate === 'function') fireToolUpdate()
   eq('and it can come back afterwards',
-    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
+    Object.keys(switchableTools).sort().join(','), 'wsl,wsl-bootstrap,wsl-doctor,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write')
 
   // The panel's 「复制插件信息」 gets the version from here, so a release never has to
   // edit a string in the client half: the Host half reads its own manifest.
@@ -2083,6 +2186,7 @@ async function toolTests(tools, shim) {
   eq('it reports this package version', payload.version, ownManifest.version)
   eq('it reports the platform', payload.platform, process.platform)
   check('it carries the switch states the panel shows', payload.config.tools.wsl === true)
+  check('it carries the file-discovery switch', payload.config.tools.glob === true, JSON.stringify(payload.config))
   check('it carries the subtask-dock switch', payload.config.subtaskDock === true, JSON.stringify(payload.config))
   check('it carries the effective timeout', 'commandTimeoutMs' in payload.config)
   check('it carries no filesystem paths',
@@ -3923,6 +4027,219 @@ async function toolTests(tools, shim) {
     check('an unbalanced brace is left alone', expandIncludeGlobs('*.{js').join(',') === '*.{js')
   }
 
+  // Discovery is its own contract: the platform has `glob`, so "which files are here"
+  // must not have to be re-composed as shell text through `wsl`. The two engines have
+  // to agree about which 100 paths a cap keeps, so their sort order and their pattern
+  // dialect are checked here rather than discovered by a user.
+  console.log('\nfile discovery: the glob engine')
+  {
+    eq('a glob needs a pattern',
+      (() => { try { validatePattern('') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern must be a non-empty string')
+    eq('a NUL in a pattern is refused',
+      (() => { try { validatePattern('a\u0000b') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern must not contain a NUL byte')
+    eq('a whitespace-only pattern is refused like an empty one',
+      (() => { try { validatePattern('   ') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern must be a non-empty string')
+    // A directory pattern and an unbalanced class are read differently by the two
+    // engines (one errors, the other treats it as a literal name), so both are
+    // refused before either runs.
+    eq('a trailing slash is refused',
+      (() => { try { validatePattern('**/') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern must name files, not a directory (no trailing "/")')
+    eq('an unclosed bracket is refused',
+      (() => { try { validatePattern('a[b') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern has an unclosed "["')
+    eq('an unclosed brace is refused',
+      (() => { try { validatePattern('*.{js') } catch (error) { return error.message } })(),
+      'wsl-glob: pattern has an unclosed "{"')
+    // A class is the glob way to spell a literal bracket/brace: `[[]` matches `[`,
+    // `[{]` matches `{`. Counting characters would reject both valid patterns.
+    for (const valid of ['[[]', '[{]', 'a[[]b']) {
+      check(`a character class for a literal delimiter is accepted: ${valid}`,
+        validatePattern(valid) === valid, valid)
+    }
+
+    // The find fallback speaks only basename globs; one leading `**/` is what "at any
+    // depth" means to find already, so it is the one slash form it can honour.
+    eq('the fallback drops a leading **/', JSON.stringify(fallbackBasenames('**/*.ts')), '["*.ts"]')
+    eq('brace alternation expands for find', JSON.stringify(fallbackBasenames('*.{js,jsx}')), '["*.js","*.jsx"]')
+    eq('a slash pattern has no find spelling', fallbackBasenames('src/*.ts'), null)
+    eq('and neither does a nested one', fallbackBasenames('**/src/*.ts'), null)
+    eq('a negated pattern is not a find name', fallbackBasenames('!x'), null)
+    // A brace pattern is model input; an exponential expansion is refused before it
+    // can turn into megabytes of shell text.
+    eq('an exponential brace expansion is refused',
+      fallbackBasenames('{a,b}'.repeat(20)), null)
+    // The refusal must exist in the SCRIPT even when this machine has rg: the
+    // integration test below cannot be conditional on the installed engine.
+    check('the script carries the find refusal for a path pattern',
+      globScript({ path: '.', pattern: 'src/*.ts' }).includes('only supports basename patterns'),
+      globScript({ path: '.', pattern: 'src/*.ts' }).slice(0, 500))
+
+    const script = globScript({ path: '~/project', pattern: '*.ts' })
+    check('the script prefers rg when the distribution has it', script.includes('command -v rg'))
+    check('and asks rg for an mtime-sorted, NUL-separated walk',
+      script.includes('--files') && script.includes('--sort=modified') && script.includes('-0'))
+    check('hidden and ignored files are part of the listing',
+      script.includes('--hidden') && script.includes('--no-ignore'))
+    check('VCS metadata is excluded as an entry and as a directory',
+      script.includes("'!**/.git'") && script.includes("'!**/.git/**'")
+      && script.includes("'!**/.jj'") && script.includes("'!**/.jj/**'")
+      && script.includes("'!**/.sl'") && script.includes("'!**/.sl/**'"), script.slice(0, 400))
+    check('the find branch prunes the same six names',
+      script.includes("-name '.jj'") && script.includes("! -name '.sl'"))
+    check('the fallback is a GNU find walk',
+      script.includes('find --version') && script.includes("-printf '%T@\\t%p\\0'"))
+    check('the fallback sorts ascending, exactly like rg --sort=modified', script.includes('-k1,1n'))
+    // A pattern is not a path: `~` there is a literal character, which is why the
+    // pattern is shell-quoted rather than fed through quotePath.
+    const tildePattern = globScript({ path: '.', pattern: '~root/*.txt' })
+    check('a pattern starting with ~ is quoted literally',
+      tildePattern.includes("-g '~root/*.txt'") && !tildePattern.includes("~root/'*.txt'"), tildePattern.slice(0, 400))
+    check('a root with a space stays one word', globScript({ path: '/a b', pattern: 'x' }).includes("p='/a b'"))
+    // GNU find has no end-of-options marker: a relative root starting with `-` is an
+    // expression to it, so it is made a path before the walk starts.
+    check('a leading-dash root cannot become a find expression',
+      globScript({ path: '-delete', pattern: '*' }).includes("p='./-delete'"))
+    check('the root is refused before the walk when it is not a directory',
+      script.includes('[ ! -d "$p" ]'))
+
+    const parsed = parseGlobOutput('DSHGLOB rg 3 0 0\na.ts\u0000dir/b.ts\u0000./c.ts\u0000')
+    eq('the header and the NUL-separated body parse into one value',
+      JSON.stringify(parsed),
+      JSON.stringify({ engine: 'rg', total: 3, partial: false, capped: false, files: ['a.ts', 'dir/b.ts', 'c.ts'] }))
+    const cappedParse = parseGlobOutput('DSHGLOB find 12 1 1\n/p/one\u0000/p/two\u0000/p/last')
+    check('a capped body drops the half-written last record',
+      cappedParse.capped === true && cappedParse.partial === true && cappedParse.total === 12
+      && JSON.stringify(cappedParse.files) === '["/p/one","/p/two"]', JSON.stringify(cappedParse))
+    eq('without a header there is no listing', parseGlobOutput('garbage'), null)
+
+    // The tool: cap the inline page, keep the distribution's total, spill the rest.
+    const spillCalls = []
+    const runOptions = []
+    const globTool = createWslGlobTool({
+      ctx: {
+        get: (name) => (name === 'spillStore' ? {
+          saveText: async (request) => {
+            spillCalls.push(request)
+            return { locator: '/spill/wsl-glob.txt', bytes: 1234, retrievalHint: 'read it' }
+          },
+        } : undefined),
+      },
+      config: { translatePaths: true, internalTimeoutMs: 30_000 },
+      runner: {
+        runWsl: async (command, options) => {
+          runOptions.push(options)
+          return {
+            stdout: 'DSHGLOB rg 250 0 0\n'
+              + Array.from({ length: 250 }, (_, index) => `/p/f${String(index).padStart(3, '0')}.ts`).join('\u0000')
+              + '\u0000',
+            stderr: '', exitCode: 0, truncated: false,
+          }
+        },
+      },
+    })
+    const many = await globTool.execute({ pattern: '*.ts' }, { agent: { id: 'session-1' }, callId: 'call-1' })
+    eq('the inline page is capped at 100', many.files.length, GLOB_MAX_RESULTS)
+    eq('the count is what the distribution held', many.total, 250)
+    eq('the result says it was cut', many.truncated, true)
+    eq('and keeps every one of the 100 paths', many.shown, 100)
+    eq('the complete list is spilled for the rest', many.spillPath, '/spill/wsl-glob.txt')
+    eq('the spill is marked complete when the body was not capped', many.spillComplete, true)
+    eq('the spill carries every path the walk returned', spillCalls[0]?.content.split('\n').length, 250)
+    eq('the spill names this call', spillCalls[0]?.source?.callId, 'call-1')
+    check('the rendered answer names the total and the spill file',
+      /Found 100 of 250 files/.test(renderGlob(many)) && renderGlob(many).includes('/spill/wsl-glob.txt'),
+      renderGlob(many).slice(0, 200))
+    eq('the spill count is the number of records saved, not the inline page', many.savedCount, 250)
+    // Discovery has a deadline like the platform glob's 30 s, so a walk of `/` cannot
+    // hang the call; the value comes from the plugin's own internal timeout.
+    eq('the walk is bounded by the internal timeout', runOptions[0]?.timeoutMs, 30_000)
+
+    // A body cut by the 1 MiB window: only the whole records survived, and the spill
+    // must say so rather than call itself complete.
+    const cappedSpill = []
+    const cappedTool = createWslGlobTool({
+      ctx: {
+        get: (name) => (name === 'spillStore' ? {
+          saveText: async (request) => {
+            cappedSpill.push(request)
+            return { locator: '/spill/capped.txt', bytes: 9, retrievalHint: 'read it' }
+          },
+        } : undefined),
+      },
+      config: { translatePaths: true, internalTimeoutMs: 30_000 },
+      runner: {
+        runWsl: async () => ({
+          stdout: 'DSHGLOB rg 900 0 1\n/p/a\u0000/p/b\u0000/p/half',
+          stderr: '', exitCode: 0, truncated: false,
+        }),
+      },
+    })
+    const cappedValue = await cappedTool.execute({ pattern: '*' }, { agent: { id: 'session-2' }, callId: 'call-2' })
+    eq('a capped body keeps every whole record it read', cappedValue.files.length, 2)
+    eq('and reports the total the walk saw', cappedValue.total, 900)
+    eq('the spill is marked incomplete when the walk was capped', cappedValue.spillComplete, false)
+    eq('the spill says how many records it actually holds', cappedValue.savedCount, 2)
+    check('the capped footer names the saved count, not the inline page',
+      renderGlob(cappedValue).includes('First 2 paths saved'), renderGlob(cappedValue))
+    eq('the spill owner is the calling session', cappedSpill[0]?.owner?.sessionId, 'session-2')
+    eq('the spill source names the tool', cappedSpill[0]?.source?.toolName, 'wsl-glob')
+    eq('the spill label names the pattern', cappedSpill[0]?.source?.label, 'wsl-glob *')
+    const emptyListing = {
+      pattern: '*.zzz', path: '/p', engine: 'rg', files: [], total: 0, truncated: false, partial: false, shown: 0,
+    }
+    eq('an empty answer says so in one line', renderGlob(emptyListing), 'No files matched *.zzz under /p.')
+    const partialListing = { ...emptyListing, total: 1, files: ['/p/a'], shown: 1, partial: true }
+    check('a partial listing says it may be incomplete',
+      renderGlob(partialListing).includes('could not be read'), renderGlob(partialListing))
+    const cappedListing = {
+      ...many, files: ['/p/a'], shown: 1, spillPath: '/spill/x', spillComplete: false,
+    }
+    check('a capped spill is never called complete',
+      renderGlob(cappedListing).includes('was capped') && !renderGlob(cappedListing).includes('Complete list'),
+      renderGlob(cappedListing))
+    const withoutSpill = { ...many, spillPath: undefined }
+    check('without a spill the footer says to narrow the pattern',
+      !renderGlob(withoutSpill).includes('Complete list') && renderGlob(withoutSpill).includes('narrow the pattern'),
+      renderGlob(withoutSpill))
+    eq('the pending card names the pattern and the root',
+      globTool.presentCall({ pattern: '*.ts', path: '~/p' }).title, 'Glob *.ts in ~/p')
+    await rejects('an empty path is refused',
+      () => globTool.execute({ pattern: '*.ts', path: '' }, {}), /path must be a non-empty string/)
+    await rejects('a non-string distro is refused',
+      () => globTool.execute({ pattern: '*.ts', distro: 1 }, {}), /distro must be a string/)
+    // The other file tools refuse `asRoot` unless the panel switch is on; silently
+    // ignoring the parameter here would be a downgrade the caller cannot see.
+    await rejects('asRoot is refused rather than ignored',
+      () => globTool.execute({ pattern: '*.ts', asRoot: true }, {}), /asRoot is not supported/)
+    // `false` is the other tools' "do not elevate" default, not an elevation request;
+    // refusing it would break a generic caller that always passes the field.
+    eq('asRoot:false is accepted like the other file tools', (await globTool.execute({ pattern: '*.ts', asRoot: false }, {})).total, 250)
+    await rejects('a script refusal reaches the caller with one reason',
+      () => createWslGlobTool({
+        ctx: undefined,
+        config: { translatePaths: true },
+        runner: { runWsl: async () => ({ stdout: '', stderr: 'wsl-glob: no such file or directory', exitCode: 3, truncated: false }) },
+      }).execute({ pattern: '*.ts', path: '/nope' }, {}),
+      /^wsl-glob: \/nope: no such file or directory/)
+    // A launcher warning can precede the script's own line; reporting the warning as
+    // the cause would hide the real reason.
+    await rejects('a launcher warning does not hide the script reason',
+      () => createWslGlobTool({
+        ctx: undefined,
+        config: { translatePaths: true },
+        runner: {
+          runWsl: async () => ({
+            stdout: '', stderr: 'launcher: something odd\nwsl-glob: not a directory', exitCode: 3, truncated: false,
+          }),
+        },
+      }).execute({ pattern: '*.ts', path: '/nope' }, {}),
+      /^wsl-glob: \/nope: not a directory$/)
+  }
+
   // Two properties of the file scripts that are cheaper to read than to run, and
   // that a reader of the output could not otherwise tell apart.
   console.log('\nfile tools: the scripts ask before they assume')
@@ -4313,6 +4630,44 @@ async function toolTests(tools, shim) {
     eq('a digit class matches the number under either engine', digits.total, 1)
     eq('and the match is the numeric line', digits.matches[0]?.line, 'id 42')
 
+    // Discovery, end to end: the two engines must agree about hidden files, VCS
+    // metadata, `**/` depth and the modification-time direction a cap keeps.
+    const globRoot = `${fsRoot}/glob`
+    await tools['wsl-write'].execute({ path: `${globRoot}/old.txt`, content: 'old\n' }, {})
+    await tools['wsl-write'].execute({ path: `${globRoot}/sub/new.txt`, content: 'new\n' }, {})
+    await tools['wsl-write'].execute({ path: `${globRoot}/.hidden.txt`, content: 'hidden\n' }, {})
+    await tools['wsl-write'].execute({ path: `${globRoot}/.git/object.txt`, content: 'git\n' }, {})
+    await tools.wsl.execute({ command: `touch -d '2020-01-01' ${globRoot}/old.txt`, description: 'age one file' })
+    const listed = await tools['wsl-glob'].execute({ pattern: '*.txt', path: globRoot }, {})
+    check('the listing says which engine ran', listed.engine === 'rg' || listed.engine === 'find', String(listed.engine))
+    eq('the listing finds files at every depth', listed.total, 3)
+    check('in ascending modification-time order, like the platform glob',
+      listed.files[0].endsWith('/old.txt'), JSON.stringify(listed.files))
+    check('hidden files are included', listed.files.some((file) => file.includes('.hidden.txt')), JSON.stringify(listed.files))
+    check('VCS metadata is not', listed.files.every((file) => !file.includes('/.git/')), JSON.stringify(listed.files))
+    const globText = tools['wsl-glob'].output.render({}, listed)[0].text
+    check('the rendered listing starts with the count', globText.startsWith('Found 3 files'), globText.slice(0, 80))
+    const deep = await tools['wsl-glob'].execute({ pattern: '**/new.txt', path: globRoot }, {})
+    eq('a **/ pattern matches at any depth under either engine', deep.total, 1)
+    const noGlobFiles = await tools['wsl-glob'].execute({ pattern: '*.zzz', path: globRoot }, {})
+    eq('a pattern that matches nothing is an empty answer, not an error', noGlobFiles.total, 0)
+    check('and the rendered answer says so',
+      tools['wsl-glob'].output.render({}, noGlobFiles)[0].text.startsWith('No files matched'),
+      tools['wsl-glob'].output.render({}, noGlobFiles)[0].text)
+    await rejects('a missing directory is an error, not an empty listing',
+      () => tools['wsl-glob'].execute({ pattern: '*.txt', path: `${globRoot}/nope` }, {}), /no such file or directory/)
+    // The platform excludes VCS metadata as BOTH an entry and a directory, which
+    // matters for a worktree whose `.git` is a file. Both engines are checked by
+    // the same assertion because this suite runs on whichever one is installed.
+    const worktree = `${globRoot}/worktree`
+    await tools['wsl-write'].execute({ path: `${worktree}/a.txt`, content: 'a\n' }, {})
+    await tools['wsl-write'].execute({ path: `${worktree}/.jj/inside.txt`, content: 'jj\n' }, {})
+    await tools['wsl-write'].execute({ path: `${worktree}/.git`, content: 'gitdir: elsewhere\n' }, {})
+    const everything = await tools['wsl-glob'].execute({ pattern: '*', path: worktree }, {})
+    check('a .git file and a .jj directory are excluded like the platform',
+      everything.files.length === 1 && everything.files[0].endsWith('/a.txt'),
+      JSON.stringify(everything.files))
+
     // A write through a symlink must change the target, not replace the link:
     // renaming over the link would leave the target untouched and silently turn the
     // link into a regular file.
@@ -4492,6 +4847,10 @@ async function toolTests(tools, shim) {
   // A switch is a parameter and a parameter is billed on every request whether it is used
   // or not, which is why the descriptions say what the switch is FOR in one clause instead
   // of listing everything root can do.
+  // The eleventh (`wsl-glob`) adds discovery, the one platform file tool the plugin had no
+  // counterpart for. Measured 12994 for the doctor-enabled default mount and 12992 for the
+  // installer-enabled one, so the ceilings move to 13100 / 13300 — the same ~100-300 chars
+  // of headroom as before, which is a ratchet, not a target.
   // The host asserts a SUPPORTED SUBSET of JSON Schema when a tool registers, and one
   // rule in it is not obvious: `type` may not be an array
   // (`packages/core/tools/src/json-schema.ts:305`, "type arrays are not supported").
@@ -4530,7 +4889,11 @@ async function toolTests(tools, shim) {
     catalog += cost
     check(`${name}: catalog cost within budget`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost within budget', catalog <= 11_900, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
+  // The ceiling moved with the eleventh tool: `wsl-glob` adds ~1.2k characters of
+  // description + schema, and discovery is a contract the model has to be able to
+  // recognise, so the tool earns its place rather than being trimmed to fit the old
+  // number. The per-tool ceiling above still holds every individual tool to 2.7k.
+  check('total catalog cost within budget', catalog <= 13_100, `${catalog} chars (~${Math.round(catalog / 4)} tokens)`)
   // The installer is absent from the default mount, so its cost is measured on a mount that
   // switches it on: a tool that does not exist costs nothing, but an enabled one has to fit
   // the same ceiling as the others.
@@ -4540,7 +4903,7 @@ async function toolTests(tools, shim) {
     optInCatalog += cost
     check(`${name}: catalog cost within budget with every switch on`, cost <= 2_700, `${cost} chars (description ${tool.description.length} + parameters ${JSON.stringify(tool.parameters).length})`)
   }
-  check('total catalog cost with every tool switched on within budget', optInCatalog <= 13_000, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
+  check('total catalog cost with every tool switched on within budget', optInCatalog <= 13_300, `${optInCatalog} chars (~${Math.round(optInCatalog / 4)} tokens)`)
   // The installer's own description is the only place the model learns that a
   // second call with `dryRun: false` is what installs, so that phrase is load-bearing.
   check('the installer says a second call is what installs',
@@ -7330,7 +7693,7 @@ try {
   const tools = makeCtx(shim, { jobs, settings: { tools: { doctor: true } } })
   const defaultMount = makeCtx(shim, { jobs })
   check('the default mount registers the file tools, the read-only tools and the terminal tool, not the opt-in ones',
-    Object.keys(defaultMount).sort().join(',') === 'wsl,wsl-edit,wsl-env,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(defaultMount).join(','))
+    Object.keys(defaultMount).sort().join(',') === 'wsl,wsl-edit,wsl-env,wsl-glob,wsl-grep,wsl-path,wsl-read,wsl-term,wsl-write', Object.keys(defaultMount).join(','))
   await unitTests()
   await hunkUnitTests()
   await terminalUnitTests()

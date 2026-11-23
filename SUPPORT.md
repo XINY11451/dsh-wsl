@@ -32,5 +32,5 @@ The panel ends with **one** feedback entry: a submission guide beside it (how to
 
 ## 修复的节奏 / How fixes happen
 
-报告 → 复现（必要时我会请你补 `wsl-env` 输出）→ 改代码 → 测试（这个插件有 1584 host checks + 317 项客户端检查）→ 发版（npm + 市场资产同一次发布，逐字节一致）→ 你升级后回帖确认 → 关闭。
-Report → reproduce (I may ask for a full `wsl-env`) → fix → tests (the plugin ships with 1584 host checks and 317 client checks) → release (npm and the market asset go out byte-identical in one run) → you confirm after upgrading → close.
+报告 → 复现（必要时我会请你补 `wsl-env` 输出）→ 改代码 → 测试（这个插件有 1696 host checks + 318 项客户端检查）→ 发版（npm + 市场资产同一次发布，逐字节一致）→ 你升级后回帖确认 → 关闭。
+Report → reproduce (I may ask for a full `wsl-env`) → fix → tests (the plugin ships with 1696 host checks and 318 client checks) → release (npm and the market asset go out byte-identical in one run) → you confirm after upgrading → close.

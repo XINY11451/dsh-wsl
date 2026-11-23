@@ -24,7 +24,7 @@ of the speed (see [Notes](#notes)).
 
 ## Tools
 
-The plugin registers ten tools. Each has a switch of its own except `wsl-term`, and
+The plugin registers eleven tools. Each has a switch of its own except `wsl-term`, and
 `wsl-doctor` and `wsl-bootstrap` are OFF by default:
 
 | Tool | Purpose |
@@ -39,6 +39,7 @@ The plugin registers ten tools. Each has a switch of its own except `wsl-term`, 
 | `wsl-write` | Write a text file inside the distribution, atomically, creating parents. |
 | `wsl-edit` | Replace one unique string in a text file inside the distribution. |
 | `wsl-grep` | Search file contents inside the distribution with a regular expression, grouped by file with line numbers. |
+| `wsl-glob` | Find files inside the distribution by glob pattern, in modification-time order, at most 100 inline; a larger result keeps the first 100 and spills the paths it read (the complete list when the walk was not capped). `rg` when present, GNU `find` otherwise. |
 
 ### `wsl`
 
@@ -123,11 +124,20 @@ needs (from the project): node, npm, pnpm
   MISSING pnpm — not on PATH in this distribution (from pnpm-lock.yaml)
 
 usable on the Linux side: python3 3.10.12, gcc 11.4.0, make 4.3, git 2.34.1, curl, rsync, tar, sudo
-Windows binaries on the Linux PATH (interop): npm -> /mnt/c/Program Files/nodejs/npm, npx -> …
+interop: appendWindowsPath=on (default) — 6 Windows PATH entries; shadows: npm, npx, code
+network: NAT — Windows loopback (127.0.0.1) is not reachable from this distro, default gateway 192.168.160.1; a Windows-side service must bind 0.0.0.0 (or set [wsl2] networkingMode=mirrored in .wslconfig, then wsl --shutdown)
+mount: /mnt/d (9p) has no metadata — chmod does not stick (a 600 reads back 777); add metadata to [automount] options in /etc/wsl.conf, then wsl --shutdown
 privileges: uid=1000 (xiny) · sudo: requires a password (unusable from a tool call) · root: switched off
 
+next: set [interop] appendWindowsPath=false in /etc/wsl.conf, then wsl --shutdown
 next: node, npm are not usable — wsl-bootstrap({ recipes: ["node", "pnpm"] }) installs them …
 ```
+
+The three lines above `privileges:` are the **boundary** between the two systems: what the interop PATH
+shadows (and how to separate the worlds), which networking mode decides whether a Windows-side
+service is reachable from the distribution, and whether the workspace mount carries the
+`metadata` automount option that makes `chmod` real. Each is stated only when it could be read —
+an older WSL without `wslinfo`, or a workspace on ext4, simply gets no line.
 
 That `WINDOWS` row is the reason the tool exists. WSL appends the Windows `PATH`
 to the Linux one, so `npm` resolves on a machine whose distribution has no `node`
@@ -332,9 +342,9 @@ Ten things worth knowing:
   call with `asRoot: true` — and 管理员模式 on in the panel — runs as root and reads it. An edit
   as root copies the old owner onto the new file, so editing someone else's file does not
   silently hand it to root.
-- **The four tools have panel switches, on by default.** `wsl-read`, `wsl-write`, `wsl-edit` and
-  `wsl-grep` can each be turned off in the plugin panel like the older tools; the switch is live
-  and takes the tool away without a restart.
+- **The five tools have panel switches, on by default.** `wsl-read`, `wsl-write`, `wsl-edit`,
+  `wsl-grep` and `wsl-glob` can each be turned off in the plugin panel like the older tools; the
+  switch is live and takes the tool away without a restart.
 
 ### `wsl-grep`
 
@@ -383,6 +393,44 @@ A path containing a colon is why the fallback asks `grep` for `-Z`: the file nam
 number are separated by a NUL byte, so `a:b.ts` stays one path instead of becoming `a` on line
 `b.ts`. Binary files are never returned — `grep -I` and `rg`'s own default both skip them.
 
+### `wsl-glob`
+
+Finds files inside the distribution by glob pattern — the platform's own `glob` counterpart,
+pointed at a distribution instead of at Windows:
+
+```
+wsl-glob({ pattern: '**/*.ts', path: '~/project' })
+wsl-glob({ pattern: '*.{js,jsx}', path: '/etc/nginx' })
+```
+
+`pattern` is a ripgrep glob and `path` a Linux path (default: the session workspace). The answer
+is **paths only** — content matching belongs to `wsl-grep` — capped at 100 inline in
+**modification-time order** (ascending, the same order `rg --sort=modified` gives the platform
+tool); a larger result keeps the first 100 and saves the paths it read to a spill file whose path
+the answer names — the complete list when the walk itself was not capped, and the first records
+read when it was. (Spilling uses the host's own spill service; on a host without one the answer
+says to narrow the pattern instead of naming a file.) Hidden and `.gitignore`d files are included (that is the platform `glob`
+contract), while `.git`/`.hg`/`.svn`/`.bzr`/`.jj`/`.sl` metadata is never listed — as a directory
+or as a worktree's `.git` FILE. A result bigger than
+the 1 MiB body window is capped and says so, and a tree where some directories could not be read
+is reported partial rather than presented as complete.
+
+A pattern without `/` matches the base name at any depth; a slash-anchored one (`src/*.ts`) is
+anchored to the session workspace, exactly like the platform `glob`, so use a `**/` prefix when
+the directory you mean can sit at any depth. The engine is whichever the distribution has: `rg
+--files --sort=modified --no-ignore --hidden` when ripgrep is installed, GNU `find` otherwise
+(mtime sort via `-printf`, VCS names pruned, hidden files included). The fallback only
+speaks basename patterns: a pattern with a remaining path separator (`src/*.ts`) is refused with
+the way forward — install ripgrep (the `tools` recipe of `wsl-bootstrap`) or reduce the pattern to
+a basename, where an optional `**/` prefix is the one path-shaped form the fallback accepts —
+because `find -name` and `rg --glob` do not read those patterns the same way. Two more forms
+need ripgrep: a negated pattern (`!x`) and a brace pattern expanding beyond 64 alternatives; the
+fallback refuses them instead of answering differently. Paths come back as
+the engine printed them with a leading `./` dropped, so they can be fed straight to `wsl-read`,
+`wsl-grep` or `wsl-edit` without a `wsl-path` conversion — unlike the platform `glob` reached
+through `\\wsl.localhost\...`, which returns UNC paths and pays the 9p latency (and, on some
+trees, its permission errors).
+
 ## Running privileged commands (`asRoot`)
 
 WSL's root does not need a password, so a single call can run as root (that is
@@ -398,7 +446,7 @@ account. Every privileged result is marked (`[ran as root: wsl -u root]`), and t
 destructive-command guard still applies on top: `rm -rf` needs `allowDangerous: true`
 whether or not the call runs as root.
 
-The four file tools take the same parameter and honour the same switch — `asRoot` on
+The four file tools that support `asRoot` take the same parameter and honour the same switch — `asRoot` on
 `wsl-read`, `wsl-write`, `wsl-edit` and `wsl-grep` — so a file or a directory the user
 cannot open is one argument away instead of one `wsl` call away:
 
@@ -454,11 +502,11 @@ install gate refuses a release whose declared range excludes the running DSH.
 Only 0.2.1 and newer is supported: the pre-bridge terminal generation (DSH ≤0.2.0,
 where a plugin could drive a browser terminal through `terminalController.follow` /
 `write`) was removed, so the terminal tool reports that it cannot drive a terminal
-on those hosts instead of reaching into the user's shell. The other five tools are
+on those hosts instead of reaching into the user's shell. The other tools are
 plain subprocess calls and still run there, but the package itself does not claim
 that support.
 
-Verified against DSH **0.2.2-rc.1** (and 0.2.1-rc.5 before it): the tool schemas pass DSH's own
+Verified against DSH **0.2.2-rc.5** (and 0.2.3-alpha.2, and 0.2.2-rc.1 before them): the tool schemas pass DSH's own
 `assertSupportedJsonSchema`, the subprocess seam is exercised against the real
 provider rather than a shim, and the background-job path is checked against the
 real job registry, including the session-id ownership fence (0.2.1 hands out
@@ -493,6 +541,11 @@ explanation.
 | `wsl` 命令执行 | registers the `wsl` tool |
 | `wsl-path` 路径转换 | registers the `wsl-path` tool |
 | `wsl-env` 能力体检 | registers the `wsl-env` tool |
+| `wsl-read` 读取文件 | registers the `wsl-read` tool |
+| `wsl-write` 写入文件 | registers the `wsl-write` tool |
+| `wsl-edit` 精确替换 | registers the `wsl-edit` tool |
+| `wsl-grep` 搜索内容 | registers the `wsl-grep` tool |
+| `wsl-glob` 查找文件 | registers the `wsl-glob` tool: file discovery by glob, modification-time order, 100 inline plus the read paths spilled (the complete list only when the walk was not capped) |
 | `wsl-doctor` 项目体检 | registers `wsl-doctor`. **Off by default**: the diagnostics tool is opt-in |
 | `wsl-bootstrap` 安装工具链 | registers `wsl-bootstrap`, which may install into the distribution. **Off by default**, and its `dryRun` still has to be turned off per call |
 | 后台任务 | whether `wsl` accepts `runInBackground` |
@@ -502,7 +555,7 @@ explanation.
 | WSL 终端启动路径 | the optional sidebar terminal's startup directory — `--cd <dir>` on the `terminal-controller` row of your **profile patch** (see [Optional: a WSL terminal in the sidebar](#optional-a-wsl-terminal-in-the-sidebar)). Empty clears it, and the panel reads the current value from the same file |
 | 终端历史行数 | how many lines of output that terminal keeps (`scrollback` on the same row). The platform default is 1000; `0` keeps none and an empty box restores the default. Both fields take effect at the next DSH start |
 | 危险命令守卫 | whether a destructive command needs an explicit `allowDangerous` |
-| 管理员模式（root） | whether `wsl` and the four file tools accept `asRoot: true` (`wsl -u root`). WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
+| 管理员模式（root） | whether `wsl` and the four file tools that take it (`wsl-read`, `wsl-write`, `wsl-edit`, `wsl-grep`) accept `asRoot: true` (`wsl -u root`). `wsl-glob` refuses the parameter rather than ignoring it. WSL's root needs no password, so this switch is the authorisation itself; **off by default** |
 | 显示输入框上方子任务栏 | whether the browser half renders the subtask row above the composer (this conversation's WSL subtasks, and the terminals you opened). **On by default**. Off means nothing is rendered and no height is reserved — not even the faint 「暂无子任务」 line — which keeps another plugin's composer-anchored UI where it belongs. It changes the display only: WSL tools, terminals and the subtask records keep working |
 
 The panel edits the plugin's own configuration, so the same values can be written
@@ -834,7 +887,7 @@ them process-wide, so no preset declares the row.
 ### Tests
 
 ```sh
-npm test          # 1584 host checks against real WSL (shim for ctx.subprocess) + 317 client checks
+npm test          # 1696 host checks against real WSL (shim for ctx.subprocess) + 318 client checks
 npm run test:real # the same checks against the REAL provider, plus the seam-fact suite
 ```
 

@@ -1,6 +1,6 @@
 // dsh-wsl: model-facing WSL tools for DeepSeek Harness (DSH).
 //
-// Registers up to six tools, each one switchable from the plugin's left-sidebar
+// Registers the eleven tools, each one switchable from the plugin's left-sidebar
 // panel (`wsl-term` has no switch: opening a terminal is the consent it needs):
 //   - `wsl`          : run a Linux command through wsl.exe, returning stdout/stderr
 //                      with exit-code / signal / timeout / truncation markers.
@@ -9,6 +9,8 @@
 //                      disk) so an agent knows what it is running on.
 //   - `wsl-doctor`   : compare a project's toolchain with what the distro really has.
 //   - `wsl-bootstrap`: install a fixed toolchain recipe inside the distro (dry run first).
+//   - `wsl-read` / `wsl-write` / `wsl-edit` / `wsl-grep` / `wsl-glob`:
+//                      the platform's file tools, pointed at the distribution.
 //   - `wsl-term`     : drive the session's own terminal / a private PTY across steps.
 //
 // `wsl` runs each command in a fresh shell, so no state persists between its calls;
@@ -55,6 +57,7 @@ import { createWslReadTool } from './lib/tools/wsl-read.js'
 import { createWslWriteTool } from './lib/tools/wsl-write.js'
 import { createWslEditTool } from './lib/tools/wsl-edit.js'
 import { createWslGrepTool } from './lib/tools/wsl-grep.js'
+import { createWslGlobTool } from './lib/tools/wsl-glob.js'
 import { createWslTermTool } from './lib/tools/wsl-term.js'
 import { createLazyTerminalTransport } from './lib/pty-transport.js'
 import { answerJson, isJsonRequest, readJsonBody } from './lib/http.js'
@@ -119,7 +122,7 @@ export function buildConfig(Schema) {
   } catch (error) {
     // A builder that is present but is not the one this plugin expects (an incompatible
     // `@deepseek-ai/schemastery` in the profile) used to throw HERE, at module scope, during
-    // import — so all six tools disappeared instead of degrading to "no panel". Building the
+    // import — so every tool disappeared instead of degrading to "no panel". Building the
     // schema must never be the thing that decides whether a tool exists.
     console.warn(
       'dsh-wsl-tool: building the Config schema failed — the tools run on their defaults ' +
@@ -143,6 +146,7 @@ function defineConfig(Schema) {
     write: Schema.boolean().default(true).description('注册 `wsl-write` 工具：写入发行版内的文本文件，整文件替换；先写同目录临时文件再改名，失败不留半截文件。').volatile(),
     edit: Schema.boolean().default(true).description('注册 `wsl-edit` 工具：在发行版内的文件里做精确字符串替换；要求唯一匹配，文件须为 2 MiB 以内的 UTF-8 文本。').volatile(),
     grep: Schema.boolean().default(true).description('注册 `wsl-grep` 工具：在发行版内按正则搜索文件内容，按文件分组返回行号；有 `rg` 用 `rg`，没有则退回 GNU `grep -E`。').volatile(),
+    glob: Schema.boolean().default(true).description('注册 `wsl-glob` 工具：在发行版内按通配符找文件，按修改时间排序、最多内联 100 条，超出时完整列表落盘；有 `rg` 用 `rg`，没有则退回 GNU `find`。').volatile(),
   }).description('要注册哪些工具；改动即时生效（面板开关一拨，工具就出现或消失，不需要重启）。'),
   backgroundJobs: Schema.boolean().default(true).description('允许长任务以 `runInBackground` 后台执行，结果由内置 job 工具读取。').volatile(),
   translatePaths: Schema.boolean().default(true).description('命令中的 Windows 路径默认转为 `/mnt/...`。').volatile(),
@@ -712,6 +716,10 @@ export function apply(ctx, settings = {}) {
     // `wsl` keeps the result grouped by file with line numbers, which a raw shell grep cannot
     // promise once a path contains a colon.
     grep: () => createWslGrepTool({ config, runner }),
+    // Discovery is the platform's `glob` counterpart: `wsl-grep` searches contents, so without
+    // this the model had to compose `find`/`rg --files` and parse text, or glob through
+    // `\\wsl.localhost` (9p: slow, UNC paths, permission errors on root-owned directories).
+    glob: () => createWslGlobTool({ ctx, config, runner }),
     // The terminal tool has NO switch: driving a shell IS the thing it exists for, and on a build
     // where the sidebar cannot be joined it opens its own shell instead. It reads the transport
     // lazily, so a build with neither generation still mounts this plugin and reports that
